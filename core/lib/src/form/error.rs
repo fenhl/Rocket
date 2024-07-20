@@ -1,6 +1,6 @@
 //! Form error types.
 
-use std::{fmt, io};
+use std::{fmt, io, sync::Arc};
 use std::num::{ParseIntError, ParseFloatError};
 use std::str::{Utf8Error, ParseBoolError};
 use std::char::ParseCharError;
@@ -54,7 +54,7 @@ use crate::data::ByteUnit;
 ///     Ok(i)
 /// }
 /// ```
-#[derive(Default, Debug, PartialEq, Serialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize)]
 #[serde(transparent)]
 pub struct Errors<'v>(Vec<Error<'v>>);
 
@@ -131,7 +131,7 @@ pub struct Errors<'v>(Vec<Error<'v>>);
 /// | `value`  | `Option<&str>` | the erroring field's value, if known             |
 /// | `entity` | `&str`         | string representation of the erroring [`Entity`] |
 /// | `msg`    | `&str`         | concise message of the error                     |
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Error<'v> {
     /// The name of the field, if it is known.
     pub name: Option<NameBuf<'v>>,
@@ -162,7 +162,7 @@ pub struct Error<'v> {
 ///   * [`io::Error`] => [`ErrorKind::Io`]
 ///   * `Box<dyn std::error::Error + Send` => [`ErrorKind::Custom`]
 ///   * `(Status, Box<dyn std::error::Error + Send)` => [`ErrorKind::Custom`]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum ErrorKind<'v> {
     /// The value's length, in bytes, was outside the range `[min, max]`.
@@ -196,9 +196,9 @@ pub enum ErrorKind<'v> {
     Unknown,
     /// A custom error occurred. Status defaults to
     /// [`Status::UnprocessableEntity`] if one is not directly specified.
-    Custom(Status, Box<dyn std::error::Error + Send>),
+    Custom(Status, Arc<dyn std::error::Error + Send + Sync>),
     /// An error while parsing a multipart form occurred.
-    Multipart(multer::Error),
+    Multipart(Arc<multer::Error>),
     /// A string was invalid UTF-8.
     Utf8(Utf8Error),
     /// A value failed to parse as a char.
@@ -212,7 +212,7 @@ pub enum ErrorKind<'v> {
     /// A value failed to parse as an IP or socket address.
     Addr(AddrParseError),
     /// An I/O error occurred.
-    Io(io::Error),
+    Io(Arc<io::Error>),
 }
 
 /// The erroneous form entity or form component.
@@ -451,9 +451,9 @@ impl<'v> Error<'v> {
     /// }
     /// ```
     pub fn custom<E>(error: E) -> Self
-        where E: std::error::Error + Send + 'static
+        where E: std::error::Error + Send + Sync + 'static
     {
-        (Box::new(error) as Box<dyn std::error::Error + Send>).into()
+        (Arc::new(error) as Arc<dyn std::error::Error + Send + Sync>).into()
     }
 
     /// Creates a new `Error` with `ErrorKind::Validation` and message `msg`.
@@ -726,9 +726,8 @@ impl<'v> Error<'v> {
         use multer::Error::*;
 
         match self.kind {
-            | InvalidLength { min: None, .. }
-            | Multipart(FieldSizeExceeded { .. })
-            | Multipart(StreamSizeExceeded { .. }) => Status::PayloadTooLarge,
+            InvalidLength { min: None, .. } => Status::PayloadTooLarge,
+            Multipart(ref e) if matches!(**e, FieldSizeExceeded { .. } | StreamSizeExceeded { .. }) => Status::PayloadTooLarge,
             Unknown => Status::InternalServerError,
             Io(_) if self.entity == Entity::Form => Status::BadRequest,
             Custom(status, _) => status,
@@ -806,7 +805,7 @@ impl<'a> From<multer::Error> for Error<'a> {
             IncompleteFieldData { field_name: Some(name) } => incomplete.with_name(name),
             IncompleteFieldData { field_name: None } => incomplete,
             IncompleteStream | IncompleteHeaders => incomplete.with_entity(Entity::Form),
-            e => Error::from(ErrorKind::Multipart(e))
+            e => Error::from(ErrorKind::Multipart(Arc::new(e)))
         }
     }
 }
@@ -966,14 +965,14 @@ impl<'a, 'v: 'a, const N: usize> From<&'static [Cow<'v, str>; N]> for ErrorKind<
     }
 }
 
-impl<'a> From<Box<dyn std::error::Error + Send>> for ErrorKind<'a> {
-    fn from(e: Box<dyn std::error::Error + Send>) -> Self {
+impl<'a> From<Arc<dyn std::error::Error + Send + Sync>> for ErrorKind<'a> {
+    fn from(e: Arc<dyn std::error::Error + Send + Sync>) -> Self {
         ErrorKind::Custom(Status::UnprocessableEntity, e)
     }
 }
 
-impl<'a> From<(Status, Box<dyn std::error::Error + Send>)> for ErrorKind<'a> {
-    fn from((status, e): (Status, Box<dyn std::error::Error + Send>)) -> Self {
+impl<'a> From<(Status, Arc<dyn std::error::Error + Send + Sync>)> for ErrorKind<'a> {
+    fn from((status, e): (Status, Arc<dyn std::error::Error + Send + Sync>)) -> Self {
         ErrorKind::Custom(status, e)
     }
 }
@@ -994,7 +993,13 @@ impl_from_for!(<'a> ParseCharError => ErrorKind<'a> as Char);
 impl_from_for!(<'a> ParseFloatError => ErrorKind<'a> as Float);
 impl_from_for!(<'a> ParseBoolError => ErrorKind<'a> as Bool);
 impl_from_for!(<'a> AddrParseError => ErrorKind<'a> as Addr);
-impl_from_for!(<'a> io::Error => ErrorKind<'a> as Io);
+impl_from_for!(<'a> Arc<io::Error> => ErrorKind<'a> as Io);
+
+impl<'a> From<io::Error> for ErrorKind<'a> {
+    fn from(value: io::Error) -> Self {
+        Self::Io(Arc::new(value))
+    }
+}
 
 impl fmt::Display for Entity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

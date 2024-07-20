@@ -4,6 +4,7 @@ use std::num::{
     NonZeroIsize, NonZeroI8, NonZeroI16, NonZeroI32, NonZeroI64, NonZeroI128,
     NonZeroUsize, NonZeroU8, NonZeroU16, NonZeroU32, NonZeroU64, NonZeroU128,
 };
+use std::sync::Arc;
 
 use time::{Date, Time, PrimitiveDateTime};
 use time::{macros::format_description, format_description::FormatItem};
@@ -412,7 +413,7 @@ static DATE_TIME_FMT2: &[FormatItem<'_>] =
 impl<'v> FromFormField<'v> for Date {
     fn from_value(field: ValueField<'v>) -> Result<'v, Self> {
         let date = Self::parse(field.value, &DATE_FMT)
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)?;
+            .map_err(|e| Arc::new(e) as Arc<dyn std::error::Error + Send + Sync>)?;
 
         Ok(date)
     }
@@ -422,7 +423,7 @@ impl<'v> FromFormField<'v> for Time {
     fn from_value(field: ValueField<'v>) -> Result<'v, Self> {
         let time = Self::parse(field.value, &TIME_FMT1)
             .or_else(|_| Self::parse(field.value, &TIME_FMT2))
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)?;
+            .map_err(|e| Arc::new(e) as Arc<dyn std::error::Error + Send + Sync>)?;
 
         Ok(time)
     }
@@ -432,7 +433,7 @@ impl<'v> FromFormField<'v> for PrimitiveDateTime {
     fn from_value(field: ValueField<'v>) -> Result<'v, Self> {
         let dt = Self::parse(field.value, &DATE_TIME_FMT1)
             .or_else(|_| Self::parse(field.value, &DATE_TIME_FMT2))
-            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)?;
+            .map_err(|e| Arc::new(e) as Arc<dyn std::error::Error + Send + Sync>)?;
 
         Ok(dt)
     }

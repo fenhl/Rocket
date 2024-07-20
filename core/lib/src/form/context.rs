@@ -78,7 +78,7 @@ pub struct Contextual<'v, T> {
 /// | `form_errors` | array of [`Error`]s                | errors not associated with a field   |
 ///
 /// See [`Error`](Error#serialization) for `Error` serialization details.
-#[derive(Debug, Default, Serialize)]
+#[derive(Debug, Default, Clone, Serialize)]
 pub struct Context<'v> {
     errors: IndexMap<NameBuf<'v>, Errors<'v>>,
     values: IndexMap<&'v Name, Vec<&'v str>>,
