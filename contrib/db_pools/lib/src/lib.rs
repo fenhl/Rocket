@@ -103,12 +103,12 @@
 //! Drivers have a varying degree of support for graceful shutdown, affected by
 //! the `Type::init()` fairing on Rocket shutdown.
 //!
-//! ## `deadpool` (v0.13)
+//! ## `deadpool` (v0.12)
 //!
 //! | Database | Feature                     | [`Pool`] Type               | [`Connection`] Deref                 |
 //! |----------|-----------------------------|-----------------------------|--------------------------------------|
-//! | Postgres | `deadpool_postgres` (v0.13) | [`deadpool_postgres::Pool`] | [`deadpool_postgres::ClientWrapper`] |
-//! | Redis    | `deadpool_redis` (v0.15)    | [`deadpool_redis::Pool`]    | [`deadpool_redis::Connection`]       |
+//! | Postgres | `deadpool_postgres` (v0.14) | [`deadpool_postgres::Pool`] | [`deadpool_postgres::ClientWrapper`] |
+//! | Redis    | `deadpool_redis` (v0.16)    | [`deadpool_redis::Pool`]    | [`deadpool_redis::Connection`]       |
 //!
 //! On shutdown, new connections are denied. Shutdown _does not_ wait for
 //! connections to be returned.
@@ -131,7 +131,7 @@
 //! On shutdown, new connections are denied. Shutdown waits for connections to
 //! be returned.
 //!
-//! ## `mongodb` (v2)
+//! ## `mongodb` (v3)
 //!
 //! | Database | Feature   | [`Pool`] Type and [`Connection`] Deref |
 //! |----------|-----------|----------------------------------------|

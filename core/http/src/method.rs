@@ -124,6 +124,10 @@ macro_rules! define_methods {
             #[doc(hidden)]
             pub const ALL: &'static [&'static str] = &[$($name),*];
 
+            /// A slice containing every defined method variant.
+            #[doc(hidden)]
+            pub const ALL_VARIANTS: &'static [Method] = &[$(Self::$V),*];
+
             /// Whether the method is considered "safe".
             ///
             /// From [RFC9110 §9.2.1](https://www.rfc-editor.org/rfc/rfc9110#section-9.2.1):
@@ -316,6 +320,12 @@ pub struct ParseMethodError;
 
 impl std::error::Error for ParseMethodError { }
 
+impl From<std::convert::Infallible> for ParseMethodError {
+    fn from(infallible: std::convert::Infallible) -> Self {
+        match infallible {}
+    }
+}
+
 impl fmt::Display for ParseMethodError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("invalid HTTP method")
@@ -327,6 +337,14 @@ impl FromStr for Method {
 
     #[inline(always)]
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::try_from(s.as_bytes())
+    }
+}
+
+impl TryFrom<&str> for Method {
+    type Error = ParseMethodError;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
         Self::try_from(s.as_bytes())
     }
 }

@@ -119,15 +119,20 @@ macro_rules! route_attribute {
         ///   * [`patch`] - `PATCH` specific route
         ///
         /// Additionally, [`route`] allows the method and uri to be explicitly
-        /// specified:
+        /// specified, and for the method to be omitted entirely, to match any
+        /// method:
         ///
         /// ```rust
         /// # #[macro_use] extern crate rocket;
-        /// #
-        /// #[route(GET, uri = "/")]
-        /// fn index() -> &'static str {
-        ///     "Hello, world!"
-        /// }
+        ///
+        /// #[route("/", method = GET)]
+        /// fn get_index() { /* ... */ }
+        ///
+        /// #[route("/", method = "VERSION-CONTROL")]
+        /// fn versioned_index() { /* ... */ }
+        ///
+        /// #[route("/")]
+        /// fn index() { /* ... */ }
         /// ```
         ///
         /// [`get`]: attr.get.html
@@ -171,7 +176,9 @@ macro_rules! route_attribute {
         /// The generic route attribute is defined as:
         ///
         /// ```text
-        /// generic-route := METHOD ',' 'uri' '=' route
+        /// generic-route := route (',' method)?
+        ///
+        /// method := 'method' '=' METHOD
         /// ```
         ///
         /// # Typing Requirements
@@ -774,6 +781,48 @@ pub fn derive_from_form(input: TokenStream) -> TokenStream {
     emit!(derive::from_form::derive_from_form(input))
 }
 
+/// Derive for the [`FromParam`] trait.
+///
+/// This [`FromParam`] derive can be applied to C-like enums whose variants have
+/// no fields. The generated implementation case-sensitively matches each
+/// variant to its stringified field name. If there is no match, an error
+/// of type [`InvalidOption`] is returned.
+///
+/// [`FromParam`]: ../rocket/request/trait.FromParam.html
+/// [`InvalidOption`]: ../rocket/error/struct.InvalidOption.html
+///
+/// # Example
+///
+/// ```rust
+/// # #[macro_use] extern crate rocket;
+/// use rocket::request::FromParam;
+///
+/// #[derive(FromParam, Debug, PartialEq)]
+/// enum MyParam {
+///     A,
+///     Bob,
+/// }
+///
+/// assert_eq!(MyParam::from_param("A").unwrap(), MyParam::A);
+/// assert_eq!(MyParam::from_param("Bob").unwrap(), MyParam::Bob);
+/// assert!(MyParam::from_param("a").is_err());
+/// assert!(MyParam::from_param("bob").is_err());
+/// assert!(MyParam::from_param("c").is_err());
+/// assert!(MyParam::from_param("C").is_err());
+///
+/// // Now `MyParam` can be used in an route to accept either `A` or `B`.
+/// #[get("/<param>")]
+/// fn index(param: MyParam) -> &'static str {
+///     match param {
+///         MyParam::A => "A",
+///         MyParam::Bob => "Bob",
+///     }
+/// }
+#[proc_macro_derive(FromParam)]
+pub fn derive_from_param(input: TokenStream) -> TokenStream {
+    emit!(derive::from_param::derive_from_param(input))
+}
+
 /// Derive for the [`Responder`] trait.
 ///
 /// The [`Responder`] derive can be applied to enums and structs with named
@@ -1119,12 +1168,12 @@ pub fn derive_uri_display_path(input: TokenStream) -> TokenStream {
 /// assert_eq!(my_routes.len(), 2);
 ///
 /// let index_route = &my_routes[0];
-/// assert_eq!(index_route.method, Method::Get);
+/// assert_eq!(index_route.method, Some(Method::Get));
 /// assert_eq!(index_route.name.as_ref().unwrap(), "index");
 /// assert_eq!(index_route.uri.path(), "/");
 ///
 /// let hello_route = &my_routes[1];
-/// assert_eq!(hello_route.method, Method::Post);
+/// assert_eq!(hello_route.method, Some(Method::Post));
 /// assert_eq!(hello_route.name.as_ref().unwrap(), "hello");
 /// assert_eq!(hello_route.uri.path(), "/hi/<person>");
 /// ```

@@ -142,7 +142,10 @@ impl Trace for Route {
         event! { level, "route",
             name = self.name.as_ref().map(|n| &**n),
             rank = self.rank,
-            method = %self.method,
+            method = %Formatter(|f| match self.method {
+                Some(method) => write!(f, "{}", method),
+                None => write!(f, "[any]"),
+            }),
             uri = %self.uri,
             uri.base = %self.uri.base(),
             uri.unmounted = %self.uri.unmounted(),
@@ -338,7 +341,7 @@ impl Trace for ErrorKind {
                 });
             }
             FailedFairings(fairings) => {
-                let span = span!(level, "fairings", count = fairings.len(), "ignition failure");
+                let span = span!(level, "failed ignite fairings", count = fairings.len());
                 span.in_scope(|| fairings.iter().trace_all(level));
             },
             SentinelAborts(sentries) => {
