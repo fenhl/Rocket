@@ -25,7 +25,7 @@ pub fn complete<I, P, O>(input: &mut Pear<I>, p: P) -> input::Result<O, I>
     (p()?, eof()?).0
 }
 
-/// TODO: Have a way to ask for for preference in ambiguity resolution.
+/// TODO: Have a way to ask for preference in ambiguity resolution.
 ///   * An ordered [Preference] is probably best.
 ///   * Need to filter/uniqueify. See `uri-pref`.
 /// Once we have this, we should probably set the default so that `authority` is
@@ -180,7 +180,7 @@ fn maybe_port<'a>(input: &mut RawInput<'a>, bytes: &[u8]) -> Result<'a, Option<u
         port_num += (b - b'0') as u32 * i;
     }
 
-    if port_num > u16::max_value() as u32 {
+    if port_num > u16::MAX as u32 {
         parse_error!("port out of range: {}", port_num)?;
     }
 

@@ -3,7 +3,7 @@
 //! This crate adds support for dynamic template rendering to Rocket. It
 //! automatically discovers templates, provides a `Responder` to render
 //! templates, and automatically reloads templates when compiled in debug mode.
-//! At present, it supports [Handlebars] and [Tera].
+//! At present, it supports [Handlebars], [Tera], and [MiniJinja].
 //!
 //! # Usage
 //!
@@ -12,7 +12,7 @@
 //!
 //!      ```toml
 //!      [dependencies.rocket_dyn_templates]
-//!      version = "0.1.0"
+//!      version = "=0.4.0-rc.1"
 //!      features = ["handlebars", "tera", "minijinja"]
 //!      ```
 //!
@@ -28,26 +28,26 @@
 //!      | [MiniJinja]  | `.j2`     | `${ROCKET_ROOT}/templates/index.html.j2`   |
 //!
 //!      [configurable]: #configuration
-//!      [Tera]: https://docs.rs/crate/tera/1
+//!      [Tera]: https://docs.rs/crate/tera/2
 //!      [Handlebars]: https://docs.rs/crate/handlebars/6
-//!      [MiniJinja]: https://docs.rs/minijinja/2
+//!      [MiniJinja]: https://docs.rs/minijinja/3
 //!
-//!   3. Attach `Template::fairing()` and return a [`Template`] from your routes
+//!   3. Attach `Templating::new()` and return a [`Template`] from your routes
 //!      via [`Template::render()`], supplying the name of the template file
-//!      **minus the last two extensions**:
+//!      **minus the engine extension**:
 //!
 //!      ```rust
 //!      # #[macro_use] extern crate rocket;
-//!      use rocket_dyn_templates::{Template, context};
+//!      use rocket_dyn_templates::{Template, Templating, context};
 //!
 //!      #[get("/")]
 //!      fn index() -> Template {
-//!          Template::render("index", context! { field: "value" })
+//!          Template::render("index.html", context! { field: "value" })
 //!      }
 //!
 //!      #[launch]
 //!      fn rocket() -> _ {
-//!          rocket::build().attach(Template::fairing())
+//!          rocket::build().attach(Templating::new())
 //!      }
 //!      ```
 //!
@@ -79,13 +79,13 @@
 //! See the [configuration chapter] of the guide for more information on
 //! configuration.
 //!
-//! [configuration chapter]: https://rocket.rs/master/guide/configuration
+//! [configuration chapter]: https://rocket.rs/v0.6-rc/guide/configuration
 //!
 //! ## Template Naming and Content-Types
 //!
 //! Templates are rendered by _name_ via [`Template::render()`], which returns a
 //! [`Template`] responder. The _name_ of the template is the path to the
-//! template file, relative to `template_dir`, minus at most two extensions.
+//! template file, relative to `template_dir`, minus the engine extension.
 //!
 //! The `Content-Type` of the response is automatically determined by the
 //! non-engine extension using [`ContentType::from_extension()`]. If there is no
@@ -93,15 +93,15 @@
 //!
 //! The following table contains examples:
 //!
-//! | template path                                 | [`Template::render()`] call       | content-type |
-//! |-----------------------------------------------|-----------------------------------|--------------|
-//! | {template_dir}/index.html.hbs                 | `render("index")`                 | HTML         |
-//! | {template_dir}/index.tera                     | `render("index")`                 | `text/plain` |
-//! | {template_dir}/index.hbs                      | `render("index")`                 | `text/plain` |
-//! | {template_dir}/dir/index.hbs                  | `render("dir/index")`             | `text/plain` |
-//! | {template_dir}/dir/data.json.tera             | `render("dir/data")`              | JSON         |
-//! | {template_dir}/data.template.xml.hbs          | `render("data.template")`         | XML          |
-//! | {template_dir}/subdir/index.template.html.hbs | `render("subdir/index.template")` | HTML         |
+//! | template path                                 | [`Template::render()`] call            | content-type |
+//! |-----------------------------------------------|----------------------------------------|--------------|
+//! | {template_dir}/index.html.hbs                 | `render("index.html")`                 | HTML         |
+//! | {template_dir}/index.tera                     | `render("index")`                      | `text/plain` |
+//! | {template_dir}/index.hbs                      | `render("index")`                      | `text/plain` |
+//! | {template_dir}/dir/index.hbs                  | `render("dir/index")`                  | `text/plain` |
+//! | {template_dir}/dir/data.json.tera             | `render("dir/data.json")`              | JSON         |
+//! | {template_dir}/data.template.xml.hbs          | `render("data.template.xml")`          | XML          |
+//! | {template_dir}/subdir/index.template.html.hbs | `render("subdir/index.template.html")` | HTML         |
 //!
 //! The recommended naming scheme is to use two extensions: one for the file
 //! type, and one for the template extension. This means that template
@@ -113,11 +113,10 @@
 //! ### Rendering Context
 //!
 //! In addition to a name, [`Template::render()`] requires a context to use
-//! during rendering. The context can be any [`Serialize`] type that serializes
-//! to an `Object` (a dictionary) value. The [`context!`] macro can be used to
-//! create inline `Serialize`-able context objects.
-//!
-//! [`Serialize`]: rocket::serde::Serialize
+//! during rendering. The context can be any
+//! [`Serialize`](rocket::serde::Serialize) type that serializes to an `Object`
+//! (a dictionary) value. The [`context!`] macro can be used to create inline
+//! `Serialize`-able context objects.
 //!
 //! ```rust
 //! # #[macro_use] extern crate rocket;
@@ -127,7 +126,7 @@
 //! #[get("/")]
 //! fn index() -> Template {
 //!     // Using the `context! { }` macro.
-//!     Template::render("index", context! {
+//!     Template::render("index.html", context! {
 //!         site_name: "Rocket - Home Page",
 //!         version: 127,
 //!     })
@@ -143,7 +142,7 @@
 //!     }
 //!
 //!     // Using an existing `IndexContext`, which implements `Serialize`.
-//!     Template::render("index", IndexContext {
+//!     Template::render("index.html", IndexContext {
 //!         site_name: "Rocket - Home Page",
 //!         version: 127,
 //!     })
@@ -152,20 +151,20 @@
 //!
 //! ### Discovery, Automatic Reloads, and Engine Customization
 //!
-//! As long as one of [`Template::fairing()`], [`Template::custom()`], or
-//! [`Template::try_custom()`] is [attached], any file in the configured
-//! `template_dir` ending with a known engine extension (as described in the
-//! [usage section](#usage)) can be rendered. The latter two fairings allow
-//! customizations such as registering helpers and templates from strings.
+//! As long as a [`Templating`] fairing is [attached], any file in the
+//! configured `template_dir` ending with a known engine extension (as described
+//! in the [usage section](#usage)) can be rendered. The fairing also allows
+//! customizing the templating engines, for instance, to register helpers or
+//! templates from strings. See [`Templating`] for details.
 //!
-//! _**Note:** Templates that are registered directly via [`Template::custom()`],
-//! use whatever name provided during that registration; no extensions are
+//! _**Note:** Templates that are registered directly with an engine use
+//! whatever name is provided during registration; no extensions are
 //! automatically removed._
 //!
 //! In debug mode (without the `--release` flag passed to `cargo`), templates
 //! are **automatically reloaded** from disk when changes are made. In release
-//! builds, template reloading is disabled to improve performance and cannot be
-//! enabled.
+//! builds, Rocket's automatic reloading is disabled to improve performance and
+//! cannot be enabled.
 //!
 //! [attached]: rocket::Rocket::attach()
 //!
@@ -176,9 +175,15 @@
 //! ([`Metadata::contains_template()`]), and to render templates to `String`
 //! ([`Metadata::render()`]).
 
-#![doc(html_root_url = "https://api.rocket.rs/master/rocket_dyn_templates")]
+#![doc(html_root_url = "https://api.rocket.rs/v0.6-rc/rocket_dyn_templates")]
 #![doc(html_favicon_url = "https://rocket.rs/images/favicon.ico")]
 #![doc(html_logo_url = "https://rocket.rs/images/logo-boxed.png")]
+
+// Without an engine, the engine plumbing is unused.
+#![cfg_attr(
+    not(any(feature = "tera", feature = "handlebars", feature = "minijinja")),
+    allow(dead_code, unused_variables)
+)]
 
 #[macro_use] extern crate rocket;
 
@@ -207,5 +212,6 @@ mod metadata;
 mod template;
 
 pub use engine::Engines;
+pub use fairing::Templating;
 pub use metadata::Metadata;
 pub use template::Template;

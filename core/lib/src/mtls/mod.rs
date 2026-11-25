@@ -1,14 +1,14 @@
 //! Support for mutual TLS client certificates.
 //!
 //! For details on how to configure mutual TLS, see [`MtlsConfig`] and the [TLS
-//! guide](https://rocket.rs/master/guide/configuration/#tls). See
+//! guide](https://rocket.rs/v0.6-rc/guide/configuration/#tls). See
 //! [`Certificate`] for a request guard that validates, verifies, and retrieves
 //! client certificates.
 
 pub mod oid {
     //! Lower-level OID types re-exported from
-    //! [`oid_registry`](https://docs.rs/oid-registry/0.4) and
-    //! [`der-parser`](https://docs.rs/der-parser/7).
+    //! [`oid_registry`](https://docs.rs/oid-registry/0.8) and
+    //! [`der-parser`](https://docs.rs/der-parser/10).
 
     pub use x509_parser::oid_registry::*;
     pub use x509_parser::objects::*;
@@ -22,7 +22,7 @@ pub mod bigint {
 
 pub mod x509 {
     //! Lower-level X.509 types re-exported from
-    //! [`x509_parser`](https://docs.rs/x509-parser/0.13).
+    //! [`x509_parser`](https://docs.rs/x509-parser/0.18).
     //!
     //! Lack of documentation is directly inherited from the source crate.
     //! Prefer to use Rocket's wrappers when possible.

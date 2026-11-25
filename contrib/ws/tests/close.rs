@@ -1,0 +1,199 @@
+#![cfg(feature = "tungstenite")]
+
+#[macro_use] extern crate rocket;
+
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::Mutex;
+use std::time::Duration;
+
+use rocket::State;
+use rocket::fairing::AdHoc;
+use rocket::futures::{SinkExt, StreamExt};
+use rocket::listener::tcp::TcpListener;
+use rocket::tokio::sync::oneshot;
+use rocket::tokio::task::JoinHandle;
+use rocket::tokio::time::timeout;
+use rocket_ws as ws;
+use tokio_tungstenite::MaybeTlsStream;
+use ws::frame::{CloseCode, CloseFrame};
+
+struct Output {
+    resumed: bool,
+    dropped: Option<oneshot::Sender<bool>>,
+}
+
+impl Drop for Output {
+    fn drop(&mut self) {
+        if let Some(dropped) = self.dropped.take() {
+            let _ = dropped.send(self.resumed);
+        }
+    }
+}
+
+fn close_frame() -> CloseFrame {
+    CloseFrame { code: CloseCode::Away, reason: "going away".into() }
+}
+
+#[get("/server-close")]
+fn server_close(
+    _socket: ws::WebSocket,
+    output: &State<Mutex<Option<Output>>>,
+) -> ws::Stream!['static] {
+    let mut output = output.lock().unwrap().take().unwrap();
+    ws::Stream! { _socket =>
+        yield ws::Message::Close(Some(close_frame()));
+        output.resumed = true;
+        yield "after close".into();
+        drop(output);
+    }
+}
+
+#[get("/finite")]
+fn finite(_socket: ws::WebSocket) -> ws::Stream!['static] {
+    ws::Stream! { _socket =>
+        yield "hello".into();
+    }
+}
+
+#[get("/echo-close")]
+fn echo_close(socket: ws::WebSocket) -> ws::Stream!['static] {
+    ws::Stream! { socket =>
+        let mut socket = socket;
+        let message = socket.next().await.expect("peer close")?;
+        assert!(message.is_close());
+        yield message;
+    }
+}
+
+#[get("/end-after-close")]
+fn end_after_close(socket: ws::WebSocket) -> ws::Stream!['static] {
+    ws::Stream! { socket =>
+        for await message in socket {
+            let message = message?;
+            if message.is_close() {
+                return;
+            }
+
+            yield message;
+        }
+    }
+}
+
+struct Server {
+    shutdown: rocket::Shutdown,
+    task: JoinHandle<()>,
+}
+
+impl Server {
+    async fn stop(mut self) {
+        self.shutdown.clone().notify();
+        timeout(Duration::from_secs(3), &mut self.task)
+            .await.expect("server shutdown").unwrap();
+    }
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.shutdown.clone().notify();
+    }
+}
+
+async fn serve(rocket: rocket::Rocket<rocket::Build>) -> (u16, Server) {
+    let (tx, rx) = oneshot::channel();
+    let mut config = rocket::Config::debug_default();
+    config.shutdown.ctrlc = false;
+    let rocket = rocket.reconfigure(config)
+        .attach(AdHoc::on_liftoff("WebSocket Test", |rocket| Box::pin(async move {
+            let _ = tx.send(rocket.endpoints().find_map(|e| e.tcp()).unwrap().port());
+        })));
+
+    let rocket = timeout(Duration::from_secs(3), rocket.ignite())
+        .await.expect("server ignition").unwrap();
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let server = Server {
+        shutdown: rocket.shutdown(),
+        task: rocket::tokio::spawn(async move {
+            rocket.try_launch_on(TcpListener::bind(addr)).await.unwrap();
+        }),
+    };
+    let port = timeout(Duration::from_secs(3), rx).await.expect("server startup").unwrap();
+    (port, server)
+}
+
+#[async_test]
+async fn server_close_stops_output() {
+    let (dropped, resumed) = oneshot::channel();
+    let output = Output { resumed: false, dropped: Some(dropped) };
+    let rocket = rocket::build().manage(Mutex::new(Some(output)))
+        .mount("/", routes![server_close]);
+    let (port, server) = serve(rocket).await;
+    let url = format!("ws://127.0.0.1:{port}/server-close");
+    let (mut client, _) = timeout(Duration::from_secs(3), tokio_tungstenite::connect_async(url))
+        .await.expect("client connection").unwrap();
+
+    let message = timeout(Duration::from_secs(3), client.next())
+        .await.expect("server close").unwrap().unwrap();
+    assert_eq!(message, ws::Message::Close(Some(close_frame())));
+    assert!(!timeout(Duration::from_secs(3), resumed).await.expect("stream drop").unwrap());
+
+    // The client has read the Close but hasn't replied: the server waits.
+    let mut byte = [0u8; 1];
+    let MaybeTlsStream::Plain(tcp) = client.get_mut() else { unreachable!() };
+    let open = timeout(Duration::from_millis(500), tcp.peek(&mut byte)).await;
+    assert!(open.is_err(), "server closed before the reply: {open:?}");
+
+    // Once the client replies, the server closes the connection.
+    timeout(Duration::from_secs(3), client.flush()).await.expect("client reply").unwrap();
+    let MaybeTlsStream::Plain(tcp) = client.get_mut() else { unreachable!() };
+    let eof = timeout(Duration::from_secs(1), tcp.peek(&mut byte)).await.expect("server eof");
+    assert_eq!(eof.unwrap(), 0);
+    server.stop().await;
+}
+
+#[async_test]
+async fn stream_end_sends_close() {
+    let (port, server) = serve(rocket::build().mount("/", routes![finite])).await;
+    let url = format!("ws://127.0.0.1:{port}/finite");
+    let (mut client, _) = timeout(Duration::from_secs(3), tokio_tungstenite::connect_async(url))
+        .await.expect("client connection").unwrap();
+
+    let message = timeout(Duration::from_secs(3), client.next())
+        .await.expect("message").unwrap().unwrap();
+    assert_eq!(message, ws::Message::Text("hello".into()));
+
+    let message = timeout(Duration::from_secs(3), client.next())
+        .await.expect("server close").unwrap().unwrap();
+    assert_eq!(message, ws::Message::Close(None));
+    assert!(timeout(Duration::from_secs(3), client.next()).await.expect("close").is_none());
+    server.stop().await;
+}
+
+#[async_test]
+async fn peer_close_is_echoed() {
+    let (port, server) = serve(rocket::build().mount("/", routes![echo_close])).await;
+    let url = format!("ws://127.0.0.1:{port}/echo-close");
+    let (mut client, _) = timeout(Duration::from_secs(3), tokio_tungstenite::connect_async(url))
+        .await.expect("client connection").unwrap();
+    timeout(Duration::from_secs(3), client.send(ws::Message::Close(Some(close_frame()))))
+        .await.expect("peer close").unwrap();
+
+    let message = timeout(Duration::from_secs(3), client.next())
+        .await.expect("echoed close").unwrap().unwrap();
+    assert_eq!(message, ws::Message::Close(Some(close_frame())));
+    server.stop().await;
+}
+
+#[async_test]
+async fn stream_end_flushes_peer_close() {
+    let (port, server) = serve(rocket::build().mount("/", routes![end_after_close])).await;
+    let url = format!("ws://127.0.0.1:{port}/end-after-close");
+    let (mut client, _) = timeout(Duration::from_secs(3), tokio_tungstenite::connect_async(url))
+        .await.expect("client connection").unwrap();
+    timeout(Duration::from_secs(3), client.send(ws::Message::Close(Some(close_frame()))))
+        .await.expect("peer close").unwrap();
+
+    let message = timeout(Duration::from_secs(3), client.next())
+        .await.expect("queued close reply").unwrap().unwrap();
+    assert_eq!(message, ws::Message::Close(Some(close_frame())));
+    server.stop().await;
+}

@@ -3,15 +3,12 @@ use std::path::PathBuf;
 
 use rocket::{Rocket, Orbit, Ignite, Sentinel};
 use rocket::request::Request;
-use rocket::fairing::Fairing;
 use rocket::response::{self, Responder};
 use rocket::http::{ContentType, Status};
 use rocket::figment::{value::Value, error::Error};
 use rocket::trace::Trace;
 use rocket::serde::Serialize;
 
-use crate::Engines;
-use crate::fairing::TemplateFairing;
 use crate::context::{Context, ContextManager};
 
 pub(crate) const DEFAULT_TEMPLATE_DIR: &str = "templates";
@@ -40,105 +37,6 @@ pub(crate) struct TemplateInfo {
 }
 
 impl Template {
-    /// Returns a fairing that initializes and maintains templating state.
-    ///
-    /// This fairing, or the one returned by [`Template::custom()`], _must_ be
-    /// attached to any `Rocket` instance that wishes to render templates.
-    /// Failure to attach this fairing will result in a "Uninitialized template
-    /// context: missing fairing." error message when a template is attempted to
-    /// be rendered.
-    ///
-    /// If you wish to customize the internal templating engines, use
-    /// [`Template::custom()`] instead.
-    ///
-    /// # Example
-    ///
-    /// To attach this fairing, simple call `attach` on the application's
-    /// `Rocket` instance with `Template::fairing()`:
-    ///
-    /// ```rust
-    /// extern crate rocket;
-    /// extern crate rocket_dyn_templates;
-    ///
-    /// use rocket_dyn_templates::Template;
-    ///
-    /// fn main() {
-    ///     rocket::build()
-    ///         // ...
-    ///         .attach(Template::fairing())
-    ///         // ...
-    ///     # ;
-    /// }
-    /// ```
-    pub fn fairing() -> impl Fairing {
-        Template::custom(|_| {})
-    }
-
-    /// Returns a fairing that initializes and maintains templating state.
-    ///
-    /// Unlike [`Template::fairing()`], this method allows you to configure
-    /// templating engines via the function `f`. Note that only the enabled
-    /// templating engines will be accessible from the `Engines` type.
-    ///
-    /// This method does not allow the function `f` to fail. If `f` is fallible,
-    /// use [`Template::try_custom()`] instead.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// extern crate rocket;
-    /// extern crate rocket_dyn_templates;
-    ///
-    /// use rocket_dyn_templates::Template;
-    ///
-    /// fn main() {
-    ///     rocket::build()
-    ///         // ...
-    ///         .attach(Template::custom(|engines| {
-    ///             // engines.handlebars.register_helper ...
-    ///         }))
-    ///         // ...
-    ///     # ;
-    /// }
-    /// ```
-    pub fn custom<F: Send + Sync + 'static>(f: F) -> impl Fairing
-        where F: Fn(&mut Engines)
-    {
-        Self::try_custom(move |engines| { f(engines); Ok(()) })
-    }
-
-    /// Returns a fairing that initializes and maintains templating state.
-    ///
-    /// This variant of [`Template::custom()`] allows a fallible `f`. If `f`
-    /// returns an error during initialization, it will cancel the launch. If
-    /// `f` returns an error during template reloading (in debug mode), then the
-    /// newly-reloaded templates are discarded.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// extern crate rocket;
-    /// extern crate rocket_dyn_templates;
-    ///
-    /// use rocket_dyn_templates::Template;
-    ///
-    /// fn main() {
-    ///     rocket::build()
-    ///         // ...
-    ///         .attach(Template::try_custom(|engines| {
-    ///             // engines.handlebars.register_helper ...
-    ///             Ok(())
-    ///         }))
-    ///         // ...
-    ///     # ;
-    /// }
-    /// ```
-    pub fn try_custom<F: Send + Sync + 'static>(f: F) -> impl Fairing
-        where F: Fn(&mut Engines) -> Result<(), Box<dyn std::error::Error>>
-    {
-        TemplateFairing { callback: Box::new(f) }
-    }
-
     /// Render the template named `name` with the context `context`. The
     /// `context` is typically created using the [`context!()`](crate::context!)
     /// macro, but it can be of any type that implements `Serialize`, such as
@@ -154,7 +52,7 @@ impl Template {
     /// ```rust
     /// use rocket_dyn_templates::{Template, context};
     ///
-    /// let template = Template::render("index", context! {
+    /// let template = Template::render("index.html", context! {
     ///     foo: "Hello, world!",
     /// });
     /// ```
@@ -169,7 +67,7 @@ impl Template {
     /// let mut context = HashMap::new();
     /// context.insert("foo", "Hello, world!");
     ///
-    /// let template = Template::render("index", context);
+    /// let template = Template::render("index.html", context);
     /// ```
     #[inline]
     pub fn render<S, C>(name: S, context: C) -> Template
@@ -192,7 +90,7 @@ impl Template {
     ///
     /// Returns `Some` if the template could be rendered. Otherwise, returns
     /// `None`. If rendering fails, error output is printed to the console.
-    /// `None` is also returned if a `Template` fairing has not been attached.
+    /// `None` is also returned if a `Templating` fairing has not been attached.
     ///
     /// # Example
     ///
@@ -201,17 +99,18 @@ impl Template {
     /// # extern crate rocket_dyn_templates;
     /// use std::collections::HashMap;
     ///
-    /// use rocket_dyn_templates::Template;
+    /// use rocket_dyn_templates::{Template, Templating};
     /// use rocket::local::blocking::Client;
     ///
     /// fn main() {
-    ///     let rocket = rocket::build().attach(Template::fairing());
+    ///     let rocket = rocket::build().attach(Templating::new());
     ///     let client = Client::untracked(rocket).expect("valid rocket");
     ///
     ///     // Create a `context`. Here, just an empty `HashMap`.
     ///     let mut context = HashMap::new();
     ///     # context.insert("test", "test");
-    ///     let template = Template::show(client.rocket(), "index", context);
+    ///     let template =
+    ///         Template::show(client.rocket(), "index.html", context);
     /// }
     /// ```
     #[inline]
@@ -222,8 +121,8 @@ impl Template {
             .map(ContextManager::context)
             .or_else(|| {
                 error!("Uninitialized template context: missing fairing.\n\
-                    To use templates, you must attach `Template::fairing()`.\n\
-                    See the `Template` documentation for more information.");
+                    To use templates, you must attach `Templating::new()`.\n\
+                    See the `Templating` documentation for more information.");
 
                 None
             })?;
@@ -244,6 +143,10 @@ impl Template {
                 "requested template not found"
             );
 
+            for known in ts.iter().filter(|t| is_name_without_extension(template, t)) {
+                info!("Did you mean '{known}'? Names include the file type extension.");
+            }
+
             Status::InternalServerError
         })?;
 
@@ -261,6 +164,14 @@ impl Template {
     }
 }
 
+/// Returns `true` if `known` is `name` followed by a file type extension, as
+/// in `index` and `index.html`.
+fn is_name_without_extension(name: &str, known: &str) -> bool {
+    known.strip_prefix(name)
+        .and_then(|rest| rest.strip_prefix('.'))
+        .is_some_and(|ext| !ext.is_empty() && !ext.contains(['.', '/']))
+}
+
 /// Returns a response with the Content-Type derived from the template's
 /// extension and a fixed-size body containing the rendered template. If
 /// rendering fails, an `Err` of `Status::InternalServerError` is returned.
@@ -270,8 +181,9 @@ impl<'r> Responder<'r, 'static> for Template {
             .state::<ContextManager>()
             .ok_or_else(|| {
                 error!(
-                    "uninitialized template context: missing `Template::fairing()`.\n\
-                    To use templates, you must attach `Template::fairing()`."
+                    "Uninitialized template context: missing fairing.\n\
+                    To use templates, you must attach `Templating::new()`.\n\
+                    See the `Templating` documentation for more information."
                 );
 
                 Status::InternalServerError
@@ -285,8 +197,9 @@ impl Sentinel for Template {
     fn abort(rocket: &Rocket<Ignite>) -> bool {
         if rocket.state::<ContextManager>().is_none() {
             error!(
-                "Missing `Template::fairing()`.\n\
-                 To use templates, you must attach `Template::fairing()`."
+                "returning `Template` responder without attaching `Templating::new()`.\n\
+                To use or query templates, you must attach `Templating::new()`.\n\
+                See the `Templating` documentation for more information."
             );
 
             return true;
@@ -312,7 +225,7 @@ impl Sentinel for Template {
 /// # use rocket_dyn_templates::{Template, context};
 /// #[get("/<foo>")]
 /// fn render_index(foo: u64) -> Template {
-///     Template::render("index", context! {
+///     Template::render("index.html", context! {
 ///         // Note that shorthand field syntax is supported.
 ///         // This is equivalent to `foo: foo,`
 ///         foo,
@@ -337,7 +250,7 @@ impl Sentinel for Template {
 ///
 /// #[get("/<foo>")]
 /// fn render_index(foo: u64) -> Template {
-///     Template::render("index", IndexContext {
+///     Template::render("index.html", IndexContext {
 ///         foo,
 ///         bar: "Hello world",
 ///     })
@@ -397,4 +310,23 @@ macro_rules! context {
             $($key $(: $value)?),*
         }
     }};
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_name_without_extension;
+
+    #[test]
+    fn name_without_extension() {
+        assert!(is_name_without_extension("index", "index.html"));
+        assert!(is_name_without_extension("dir/index", "dir/index.html"));
+        assert!(is_name_without_extension("index.template", "index.template.html"));
+
+        assert!(!is_name_without_extension("index", "index"));
+        assert!(!is_name_without_extension("index", "index."));
+        assert!(!is_name_without_extension("index", "indexes.html"));
+        assert!(!is_name_without_extension("index", "index.template.html"));
+        assert!(!is_name_without_extension("index", "index.d/page"));
+        assert!(!is_name_without_extension("index.html", "index"));
+    }
 }

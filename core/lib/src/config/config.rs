@@ -15,7 +15,7 @@ use crate::data::Limits;
 /// See the [module level docs](crate::config) as well as the [configuration
 /// guide] for further details.
 ///
-/// [configuration guide]: https://rocket.rs/master/guide/configuration/
+/// [configuration guide]: https://rocket.rs/v0.6-rc/guide/configuration/
 ///
 /// # Defaults
 ///
@@ -66,6 +66,39 @@ pub struct Config {
     pub workers: usize,
     /// Limit on threads to start for blocking tasks. **(default: `512`)**
     pub max_blocking: usize,
+    /// Runtime wake interval in milliseconds; disabled when `0`.
+    /// **(default: `250`)**
+    ///
+    /// Rocket's _runtime waker_ is a separate thread that periodically wakes
+    /// an idle Tokio worker to process I/O and timers. This works around a
+    /// limitation in Tokio: a task that blocks or fails to yield can prevent
+    /// I/O and timers from making progress even when other workers are idle.
+    ///
+    /// This value sets the time between wakeups, in milliseconds. For example,
+    /// the default value of `250` means that the waker requests a wakeup every
+    /// 250 milliseconds. Decreasing this value can reduce the time spent
+    /// stalled at the cost of more wakeup overhead. Increasing the value
+    /// reduces wakeups but permits longer stalls.
+    ///
+    /// To disable the waker, set this value to `0`. This is safe when all code
+    /// executed by Rocket on your behalf, including code in dependencies, is
+    /// _cooperative_: they yield promptly and never block a worker, and
+    /// potentially blocking or long operations are executed on separate threads
+    /// via [`spawn_blocking`] or equivalent. Note that declaring a function
+    /// `async` does not ensure that its code is cooperative.
+    ///
+    /// The waker requires an available worker to restore progress. If every
+    /// worker is occupied by synchronous blocking operations or computations
+    /// that do not yield, progress cannot resume until at least one worker
+    /// becomes available. Current-thread (single-thread) runtimes necessarily
+    /// fall into this category: whenever a task blocks the only worker, there
+    /// can never be another worker to restore progress. As a result, the waker
+    /// provides no benefit on these runtimes and is disabled irrespective of
+    /// this setting.
+    ///
+    /// [`spawn_blocking`]: crate::tokio::task::spawn_blocking
+    #[serde(default = "default_wake_interval")]
+    pub wake_interval: u32,
     /// How, if at all, to identify the server via the `Server` header.
     /// **(default: `"Rocket"`)**
     pub ident: Ident,
@@ -77,6 +110,11 @@ pub struct Config {
     /// To disable using any header for this purpose, set this value to `false`
     /// or `None`. Deserialization semantics are identical to those of [`Ident`]
     /// except that the value must syntactically be a valid HTTP header name.
+    ///
+    /// **Warning:** Rocket does not verify that this header was set by a proxy.
+    /// Any client can set it to any value. Only use this header if all requests
+    /// go through a trusted proxy that overwrites it. Otherwise, set this to
+    /// `false`.
     ///
     /// **(default: `"X-Real-IP"`)**
     #[serde(deserialize_with = "crate::config::http_header::deserialize")]
@@ -95,6 +133,10 @@ pub struct Config {
     /// or `None`. Deserialization semantics are identical to those of
     /// [`Config::ip_header`] (the value must be a valid HTTP header name).
     ///
+    /// **Warning:** Rocket does not verify that this header was set by a proxy.
+    /// Any client can set it to any value. Only use this header if all requests
+    /// go through a trusted proxy that overwrites it.
+    ///
     /// **(default: `None`)**
     ///
     /// [`CookieJar`]: crate::http::CookieJar
@@ -110,6 +152,26 @@ pub struct Config {
     pub temp_dir: RelativePathBuf,
     /// Keep-alive timeout in seconds; disabled when `0`. **(default: `5`)**
     pub keep_alive: u32,
+    /// Linger time in seconds; disabled when `0`. **(default: `10`)**
+    ///
+    /// When closing a connection, Rocket shuts down writes and then reads and
+    /// discards incoming data for at most `linger` seconds or until the client
+    /// closes the connection. This prevents a TCP reset from discarding a
+    /// response the client has yet to read, as can happen when the client is
+    /// still sending data, such as the rest of a request body Rocket didn't
+    /// read. See [RFC 9112 §9.6] for details. This is equivalent to nginx's
+    /// `lingering_time` and is unrelated to the `SO_LINGER` socket option.
+    ///
+    /// When disabled, Rocket closes connections immediately, and a client still
+    /// sending data may receive a reset instead of a response. Lingering always
+    /// ends when the shutdown grace period elapses.
+    ///
+    /// Upgraded connections, such as WebSocket connections, never linger: once
+    /// a connection is upgraded, its I/O handler decides when to stop reading.
+    ///
+    /// [RFC 9112 §9.6]: https://www.rfc-editor.org/rfc/rfc9112#section-9.6
+    #[serde(default = "default_linger")]
+    pub linger: u32,
     /// The secret key for signing and encrypting. **(default: `0`)**
     ///
     /// _**Note:** This field _always_ serializes as a 256-bit array of `0`s to
@@ -184,12 +246,14 @@ impl Config {
             profile: Self::DEBUG_PROFILE,
             workers: num_cpus::get(),
             max_blocking: 512,
+            wake_interval: default_wake_interval(),
             ident: Ident::default(),
             ip_header: Some(Uncased::from_borrowed("X-Real-IP")),
             proxy_proto_header: None,
             limits: Limits::default(),
             temp_dir: std::env::temp_dir().into(),
             keep_alive: 5,
+            linger: default_linger(),
             #[cfg(feature = "secrets")]
             secret_key: SecretKey::zero(),
             shutdown: ShutdownConfig::default(),
@@ -338,8 +402,14 @@ impl Config {
     /// The stringy parameter name for setting/extracting [`Config::max_blocking`].
     pub const MAX_BLOCKING: &'static str = "max_blocking";
 
+    /// The stringy parameter name for setting/extracting [`Config::wake_interval`].
+    pub const WAKE_INTERVAL: &'static str = "wake_interval";
+
     /// The stringy parameter name for setting/extracting [`Config::keep_alive`].
     pub const KEEP_ALIVE: &'static str = "keep_alive";
+
+    /// The stringy parameter name for setting/extracting [`Config::linger`].
+    pub const LINGER: &'static str = "linger";
 
     /// The stringy parameter name for setting/extracting [`Config::ident`].
     pub const IDENT: &'static str = "ident";
@@ -373,8 +443,8 @@ impl Config {
 
     /// An array of all of the stringy parameter names.
     pub const PARAMETERS: &'static [&'static str] = &[
-        Self::WORKERS, Self::MAX_BLOCKING, Self::KEEP_ALIVE, Self::IDENT,
-        Self::IP_HEADER, Self::PROXY_PROTO_HEADER, Self::LIMITS,
+        Self::WORKERS, Self::MAX_BLOCKING, Self::WAKE_INTERVAL, Self::KEEP_ALIVE, Self::LINGER,
+        Self::IDENT, Self::IP_HEADER, Self::PROXY_PROTO_HEADER, Self::LIMITS,
         Self::SECRET_KEY, Self::TEMP_DIR, Self::LOG_LEVEL, Self::LOG_FORMAT,
         Self::SHUTDOWN, Self::CLI_COLORS,
     ];
@@ -395,6 +465,14 @@ impl Config {
     pub(crate) const KNOWN_SECRET_KEYS: &'static [&'static str] = &[
         "hPRYyVRiMyxpw5sBB1XeCMN1kFsDCqKvBi2QJxBVHQk="
     ];
+}
+
+fn default_wake_interval() -> u32 {
+    250
+}
+
+fn default_linger() -> u32 {
+    10
 }
 
 impl Provider for Config {

@@ -20,9 +20,6 @@ use rocket::serde::{Deserialize, Serialize};
 /// max_connections = 1024
 /// connect_timeout = 5
 /// idle_timeout = 120
-///
-/// # This option is only supported by the `sqlx_sqlite` driver.
-/// extensions = ["memvfs", "rot13"]
 /// ```
 ///
 /// Alternatively, a custom provider can be used. For example, a custom `Figment`
@@ -39,7 +36,6 @@ use rocket::serde::{Deserialize, Serialize};
 ///             max_connections: 1024,
 ///             connect_timeout: 3,
 ///             idle_timeout: None,
-///             extensions: None,
 ///         }));
 ///
 ///     rocket::custom(figment)
@@ -75,23 +71,15 @@ pub struct Config {
     ///
     /// _Default:_ `5`.
     pub connect_timeout: u64,
-    /// Maximum number of seconds to keep a connection alive for.
+    /// Maximum number of seconds to keep a connection idle or to recycle it.
     ///
-    /// After a connection is established, it is maintained in a pool for
-    /// efficient connection retrieval. When an `idle_timeout` is set, that
-    /// connection will be closed after the timeout elapses. If an
-    /// `idle_timeout` is not specified, the behavior is driver specific but
-    /// typically defaults to keeping a connection active indefinitely.
+    /// For SQLx and MongoDB, an idle connection is closed after this timeout
+    /// elapses. For Deadpool and Diesel, this limits the time allowed to
+    /// recycle a connection before reuse, including any health check; idle
+    /// connections are not closed. `None` disables the corresponding timeout.
     ///
     /// _Default:_ `None`.
     pub idle_timeout: Option<u64>,
-    /// A list of database extensions to load at run-time.
-    ///
-    /// **Note:** Only the `sqlx_sqlite` driver supports this option (for SQLite
-    /// extensions) at this time. All other drivers ignore this option.
-    ///
-    /// _Default:_ `None`.
-    pub extensions: Option<Vec<String>>,
 }
 
 impl Default for Config {
@@ -102,7 +90,6 @@ impl Default for Config {
             max_connections: rocket::Config::default().workers * 4,
             connect_timeout: 5,
             idle_timeout: Default::default(),
-            extensions: Default::default(),
         }
     }
 }

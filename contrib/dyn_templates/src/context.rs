@@ -26,7 +26,11 @@ impl Context {
     /// Load all of the templates at `root`, initialize them using the relevant
     /// template engine, and store all of the initialized state in a `Context`
     /// structure, which is returned if all goes well.
-    pub fn initialize(root: &Path, callback: &Callback) -> Option<Context> {
+    pub fn initialize(
+        root: &Path,
+        init: Option<&Callback>,
+        load: Option<&Callback>
+    ) -> Option<Context> {
         fn is_file_with_ext(entry: &walkdir::DirEntry, ext: &str) -> bool {
             let is_file = entry.file_type().is_file();
             let has_ext = entry.path().extension().map_or(false, |e| e == ext);
@@ -53,8 +57,8 @@ impl Context {
                 if let Some(info) = templates.get(&*template) {
                     warn!(
                         %template,
-                        first_path = %entry.path().display(),
-                        second_path = info.path.as_ref().map(|p| display(p.display())),
+                        first_path = info.path.as_ref().map(|p| display(p.display())),
+                        second_path = %entry.path().display(),
                         data_type = %info.data_type,
                         "Template name '{template}' can refer to multiple templates.\n\
                          First path will be used. Second path is ignored."
@@ -75,10 +79,20 @@ impl Context {
             }
         }
 
-        let mut engines = Engines::init(&templates)?;
-        if let Err(reason) = callback(&mut engines) {
-            error!(%reason, "template customization callback failed");
-            return None;
+        let mut engines = Engines::init(&templates);
+        if let Some(init) = init {
+            if let Err(reason) = init(&mut engines) {
+                error!(%reason, "template initialization callback failed");
+                return None;
+            }
+        }
+
+        engines.load(&templates)?;
+        if let Some(load) = load {
+            if let Err(reason) = load(&mut engines) {
+                error!(%reason, "template loading callback failed");
+                return None;
+            }
         }
 
         for (name, engine_ext) in engines.templates() {
@@ -174,16 +188,16 @@ mod manager {
 
         /// Checks whether any template files have changed on disk. If there
         /// have been changes since the last reload, all templates are
-        /// reinitialized from disk and the user's customization callback is run
-        /// again.
-        pub fn reload_if_needed(&self, callback: &Callback) {
+        /// reinitialized from disk and the user's customization callbacks are
+        /// run again.
+        pub fn reload_if_needed(&self, init: Option<&Callback>, load: Option<&Callback>) {
             let templates_changes = self.watcher.as_ref()
                 .map(|(_, rx)| rx.lock().expect("fsevents lock").try_iter().count() > 0);
 
             if let Some(true) = templates_changes {
                 debug!("template change detected: reloading templates");
                 let root = self.context().root.clone();
-                if let Some(new_ctxt) = Context::initialize(&root, callback) {
+                if let Some(new_ctxt) = Context::initialize(&root, init, load) {
                     *self.context_mut() = new_ctxt;
                 } else {
                     warn!("error while reloading template\n\
@@ -210,10 +224,10 @@ fn remove_extension(path: &Path) -> PathBuf {
 /// Splits a path into a name that may be used to identify the template, and the
 /// template's data type, if any.
 fn split_path(root: &Path, path: &Path) -> (String, Option<String>) {
-    let rel_path = path.strip_prefix(root).unwrap().to_path_buf();
-    let path_no_ext = remove_extension(&rel_path);
+    let rel_path = path.strip_prefix(root).unwrap();
+    let path_no_ext = remove_extension(rel_path);
     let data_type = path_no_ext.extension();
-    let mut name = remove_extension(&path_no_ext).to_string_lossy().into_owned();
+    let mut name = path_no_ext.to_string_lossy().into_owned();
 
     // Ensure template name consistency on Windows systems
     if cfg!(windows) {
@@ -234,7 +248,7 @@ mod tests {
                 let path = Path::new(root).join(filename);
                 let (name, data_type) = split_path(Path::new(root), &path);
 
-                assert_eq!(name, "index");
+                assert_eq!(name, "index.html");
                 assert_eq!(data_type, Some("html".into()));
             }
         }
@@ -248,7 +262,7 @@ mod tests {
                     let path = Path::new(root).join(sub).join(filename);
                     let (name, data_type) = split_path(Path::new(root), &path);
 
-                    let expected_name = format!("{}index", sub);
+                    let expected_name = format!("{}index.html", sub);
                     assert_eq!(name, expected_name.as_str());
                     assert_eq!(data_type, Some("html".into()));
                 }
@@ -262,12 +276,12 @@ mod tests {
             split_path(Path::new("templates/"), &Path::new("templates/").join(path)).0
         }
 
-        assert_eq!(name_for("index.html.hbs"), "index");
+        assert_eq!(name_for("index.html.hbs"), "index.html");
         assert_eq!(name_for("index.tera"), "index");
         assert_eq!(name_for("index.hbs"), "index");
         assert_eq!(name_for("dir/index.hbs"), "dir/index");
-        assert_eq!(name_for("dir/index.html.tera"), "dir/index");
-        assert_eq!(name_for("index.template.html.hbs"), "index.template");
-        assert_eq!(name_for("subdir/index.template.html.hbs"), "subdir/index.template");
+        assert_eq!(name_for("dir/index.html.tera"), "dir/index.html");
+        assert_eq!(name_for("index.template.html.hbs"), "index.template.html");
+        assert_eq!(name_for("subdir/index.template.html.hbs"), "subdir/index.template.html");
     }
 }

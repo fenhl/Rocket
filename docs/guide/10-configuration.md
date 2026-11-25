@@ -23,29 +23,44 @@ values:
 
 | key                  | kind               | description                                     | debug/release default         |
 |----------------------|--------------------|-------------------------------------------------|-------------------------------|
-| `address`            | `IpAddr`           | IP address to serve on.                         | `127.0.0.1`                   |
+| `address`            | [`Endpoint`]       | Address or `unix:` path to serve on.            | `127.0.0.1`                   |
 | `port`               | `u16`              | Port to serve on.                               | `8000`                        |
+| `reuse`              | `bool`             | Whether to reuse an existing Unix socket file.  | `true`                        |
 | `workers`*           | `usize`            | Number of threads to use for executing futures. | cpu core count                |
 | `max_blocking`*      | `usize`            | Limit on threads to start for blocking tasks.   | `512`                         |
+| [`wake_interval`]    | `u32`              | Runtime wake interval in ms; disabled when `0`. | `250`                         |
 | `ident`              | `string`, `false`  | If and how to identify via the `Server` header. | `"Rocket"`                    |
 | `ip_header`          | `string`, `false`  | IP header to inspect to get [client's real IP]. | `"X-Real-IP"`                 |
 | `proxy_proto_header` | `string`, `false`  | Header identifying [client to proxy protocol].  | `None`                        |
 | `keep_alive`         | `u32`              | Keep-alive timeout seconds; disabled when `0`.  | `5`                           |
-| `log_level`          | [`LogLevel`]       | Max level to log. (off/normal/debug/critical)   | `normal`/`critical`           |
+| `linger`             | `u32`              | Linger time seconds; disabled when `0`.         | `10`                          |
+| `temp_dir`           | `string`           | Directory to store temporary files in.          | [`std::env::temp_dir()`]      |
+| `log_level`          | [`Level`]          | Max level to log; disabled when `off`.          | `info`/`error`                |
+| `log_format`         | [`TraceFormat`]    | Format to use when logging.                     | `pretty`/`compact`            |
 | `cli_colors`         | [`CliColors`]      | Whether to use colors and emoji when logging.   | `"auto"`                      |
 | `secret_key`         | [`SecretKey`]      | Secret key for signing and encrypting values.   | `None`                        |
 | `tls`                | [`TlsConfig`]      | TLS configuration, if any.                      | `None`                        |
 | `limits`             | [`Limits`]         | Streaming read size limits.                     | [`Limits::default()`]         |
 | `limits.$name`       | `&str`/`uint`      | Read limit for `$name`.                         | form = "32KiB"                |
-| `ctrlc`              | `bool`             | Whether `ctrl-c` initiates a server shutdown.   | `true`                        |
 | `shutdown`*          | [`ShutdownConfig`] | Graceful shutdown configuration.                | [`ShutdownConfig::default()`] |
+| `shutdown.ctrlc`     | `bool`             | Whether `ctrl-c` initiates a server shutdown.   | `true`                        |
 
 
 <small>* Note: the `workers`, `max_blocking`, and `shutdown.force` configuration
 parameters are only read from the [default provider](#default-provider).</small>
 
-[client's real IP]: @api/master/rocket/request/struct.Request.html#method.real_ip
-[client to proxy protocol]: @api/master/rocket/request/struct.Request.html#method.proxy_proto
+The `address`, `port`, `reuse`, and `tls` parameters are read by the default
+connection listener. An `address` may be an IP address, a socket address with
+a port, or a Unix domain socket path prefixed with `unix:`, as in
+`unix:/run/rocket.sock`. If set, `port` replaces the port in a TCP `address`.
+The `reuse` parameter only applies to Unix domain sockets.
+
+[client's real IP]: @api/v0.6-rc/rocket/request/struct.Request.html#method.real_ip
+[`Endpoint`]: @api/v0.6-rc/rocket/listener/enum.Endpoint.html
+[`TraceFormat`]: @api/v0.6-rc/rocket/trace/enum.TraceFormat.html
+[`std::env::temp_dir()`]: @std/env/fn.temp_dir.html
+[client to proxy protocol]: @api/v0.6-rc/rocket/request/struct.Request.html#method.proxy_proto
+[`wake_interval`]: #wake-interval
 
 ### Profiles
 
@@ -65,20 +80,20 @@ profile supplant any values with the same name in any profile.
 
 [`Provider`]: @figment/trait.Provider.html
 [`Profile`]: @figment/struct.Profile.html
-[`Config`]: @api/master/rocket/struct.Config.html
-[`Config::figment()`]: @api/master/rocket/struct.Config.html#method.figment
+[`Config`]: @api/v0.6-rc/rocket/struct.Config.html
+[`Config::figment()`]: @api/v0.6-rc/rocket/struct.Config.html#method.figment
 [`Toml`]: @figment/providers/struct.Toml.html
 [`Json`]: @figment/providers/struct.Json.html
 [`Figment`]: @figment/struct.Figment.html
-[`Deserialize`]: @api/master/rocket/serde/trait.Deserialize.html
-[`LogLevel`]: @api/master/rocket/config/enum.LogLevel.html
-[`Limits`]: @api/master/rocket/data/struct.Limits.html
-[`Limits::default()`]: @api/master/rocket/data/struct.Limits.html#impl-Default-for-Limits
-[`SecretKey`]: @api/master/rocket/config/struct.SecretKey.html
-[`CliColors`]: @api/master/rocket/config/enum.CliColors.html
-[`TlsConfig`]: @api/master/rocket/tls/struct.TlsConfig.html
-[`ShutdownConfig`]: @api/master/rocket/shutdown/struct.ShutdownConfig.html
-[`ShutdownConfig::default()`]: @api/master/rocket/shutdown/struct.ShutdownConfig.html#fields
+[`Deserialize`]: @api/v0.6-rc/rocket/serde/trait.Deserialize.html
+[`Level`]: @api/v0.6-rc/rocket/config/struct.Level.html
+[`Limits`]: @api/v0.6-rc/rocket/data/struct.Limits.html
+[`Limits::default()`]: @api/v0.6-rc/rocket/data/struct.Limits.html#impl-Default-for-Limits
+[`SecretKey`]: @api/v0.6-rc/rocket/config/struct.SecretKey.html
+[`CliColors`]: @api/v0.6-rc/rocket/config/enum.CliColors.html
+[`TlsConfig`]: @api/v0.6-rc/rocket/tls/struct.TlsConfig.html
+[`ShutdownConfig`]: @api/v0.6-rc/rocket/shutdown/struct.ShutdownConfig.html
+[`ShutdownConfig::default()`]: @api/v0.6-rc/rocket/shutdown/struct.ShutdownConfig.html#fields
 
 ## Default Provider
 
@@ -94,16 +109,17 @@ sources in ascending priority order:
 
 The selected profile is the value of the `ROCKET_PROFILE` environment variable,
 or if it is not set, "debug" when compiled in debug mode and "release" when
-compiled in release mode. With the exception of `log_level`, which changes from
-`normal` in debug to `critical` in release, all of the default configuration
-values are the same in all profiles. What's more, all configuration values
-_have_ defaults, so no configuration is needed to get started.
+compiled in release mode. With the exception of `log_level` and `log_format`,
+which change from `info` and `pretty` in debug to `error` and `compact` in
+release, all of the default configuration values are the same in all profiles.
+What's more, all configuration values _have_ defaults, so no configuration is
+needed to get started.
 
 As a result of `Config::figment()`, without any effort, Rocket can be configured
 via a `Rocket.toml` file and/or via environment variables, the latter of which
 take precedence over the former.
 
-[`Config::default()`]: @api/master/rocket/struct.Config.html#method.default
+[`Config::default()`]: @api/v0.6-rc/rocket/struct.Config.html#method.default
 
 ### Rocket.toml
 
@@ -154,11 +170,14 @@ address = "127.0.0.1"
 port = 8000
 workers = 16
 max_blocking = 512
+wake_interval = 250
 keep_alive = 5
+linger = 10
 ident = "Rocket"
 ip_header = "X-Real-IP" # set to `false` to disable
 proxy_proto_header = false # set to `false` (the default) to disable
-log_level = "normal"
+log_level = "info"
+log_format = "pretty"
 temp_dir = "/tmp"
 cli_colors = true
 # NOTE: Don't (!) use this key! Generate your own and keep it private!
@@ -197,6 +216,7 @@ ROCKET_STRING=Hello
 ROCKET_STRING="Hello There"
 
 ROCKET_KEEP_ALIVE=1
+ROCKET_WAKE_INTERVAL=100
 ROCKET_IDENT=Rocket
 ROCKET_IDENT="Hello Rocket"
 ROCKET_IDENT=false
@@ -235,7 +255,7 @@ bytes Rocket should accept for that type. Rocket can parse both integers
 By default, Rocket specifies a `32 KiB` limit for incoming forms. Since Rocket
 requires specifying a read limit whenever data is read, external data guards may
 also choose to have a configure limit via the `limits` parameter. The
-[`Json`](@api/master/rocket/serde/json/struct.Json.html) type, for instance, uses the
+[`Json`](@api/v0.6-rc/rocket/serde/json/struct.Json.html) type, for instance, uses the
 `limits.json` parameter.
 
 ### TLS
@@ -247,7 +267,7 @@ Security). To enable TLS support:
 
    ```toml,ignore
    [dependencies]
-   rocket = { version = "0.6.0-dev", features = ["tls"] }
+   rocket = { version = "=0.6.0-rc.1", features = ["tls"] }
    ```
 
   2. Configure a TLS certificate chain and private key via the `tls.key` and
@@ -271,8 +291,8 @@ The `tls` parameter is expected to be a dictionary that deserializes into a
 | `prefer_server_cipher_order` | no        | Boolean for whether to [prefer server cipher suites].         |
 | `mutual`                     | no        | A map with [mutual TLS] configuration.                        |
 
-[`CipherSuite`]: @api/master/rocket/tls/enum.CipherSuite.html
-[prefer server cipher suites]: @api/master/rocket/tls/struct.TlsConfig.html#method.with_preferred_server_cipher_order
+[`CipherSuite`]: @api/v0.6-rc/rocket/tls/enum.CipherSuite.html
+[prefer server cipher suites]: @api/v0.6-rc/rocket/tls/struct.TlsConfig.html#method.with_preferred_server_cipher_order
 [mutual TLS]: #mutual-tls
 
 When specified via TOML or other serialized formats, each [`CipherSuite`] is
@@ -298,6 +318,13 @@ ciphers = [
 ]
 ```
 
+! note: HTTP/3 requires the `TLS_AES_128_GCM_SHA256` cipher suite.
+
+  When the `http3-preview` feature is enabled, the enabled cipher suites must
+  include `TLS_AES_128_GCM_SHA256`, which QUIC requires. Otherwise, Rocket fails
+  to launch. This applies both to the configured `ciphers` and to the cipher
+  suites of an installed [`CryptoProvider`](#crypto-providers).
+
 ### Mutual TLS
 
 Rocket supports mutual TLS client authentication. Configuration works in concert
@@ -312,7 +339,7 @@ enabled and support configured via the `tls.mutual` config parameter:
 
    ```toml,ignore
    [dependencies]
-   rocket = { version = "0.6.0-dev", features = ["mtls"] }
+   rocket = { version = "=0.6.0-rc.1", features = ["mtls"] }
    ```
 
    This implicitly enables the `tls` feature.
@@ -328,15 +355,15 @@ enabled and support configured via the `tls.mutual` config parameter:
    ```
 
 The `tls.mutual` parameter is expected to be a dictionary that deserializes into a
-[`MutualTls`] structure:
+[`MtlsConfig`] structure:
 
 | key         | required  | type                                                        |
 |-------------|-----------|-------------------------------------------------------------|
 | `ca_certs`  | **_yes_** | Path or bytes to DER-encoded X.509 TLS cert chain.          |
 | `mandatory` | no        | Boolean controlling whether the client _must_ authenticate. |
 
-[`MtlsConfig`]: @api/master/rocket/mtls/struct.MtlsConfig.html
-[`mtls`]: @api/master/rocket/mtls/index.html
+[`MtlsConfig`]: @api/v0.6-rc/rocket/mtls/struct.MtlsConfig.html
+[`mtls`]: @api/v0.6-rc/rocket/mtls/index.html
 
 Rocket reports if TLS and/or mTLS are enabled at launch time:
 
@@ -359,14 +386,14 @@ fn auth(cert: Certificate<'_>) {
 }
 ```
 
-The [TLS example](@git/master/examples/tls) illustrates a fully configured TLS server with
+The [TLS example](@git/v0.6-rc/examples/tls) illustrates a fully configured TLS server with
 mutual TLS.
 
 ! warning: Rocket's built-in TLS supports only TLS 1.2 and 1.3.
 
   This may not be suitable for production use requiring legacy support.
 
-[`mtls::Certificate`]: @api/master/rocket/mtls/struct.Certificate.html
+[`mtls::Certificate`]: @api/v0.6-rc/rocket/mtls/struct.Certificate.html
 
 ### Proxied TLS
 
@@ -390,10 +417,10 @@ via a TOML file:
 proxy_proto_header = "X-Forwarded-Proto"
 ```
 
-[`Request::proxy_proto()`]: @api/master/rocket/request/struct.Request.html#method.proxy_proto
-[`ProxyProto`]: @api/master/rocket/http/enum.ProxyProto.html
-[`CookieJar`]: @api/master/rocket/http/struct.CookieJar.html
-[`Request::context_is_likely_secure()`]: @api/master/rocket/request/struct.Request.html#method.context_is_likely_secure
+[`Request::proxy_proto()`]: @api/v0.6-rc/rocket/request/struct.Request.html#method.proxy_proto
+[`ProxyProto`]: @api/v0.6-rc/rocket/http/enum.ProxyProto.html
+[`CookieJar`]: @api/v0.6-rc/rocket/http/struct.CookieJar.html
+[`Request::context_is_likely_secure()`]: @api/v0.6-rc/rocket/request/struct.Request.html#method.context_is_likely_secure
 
 ### Crypto Providers
 
@@ -424,7 +451,16 @@ fn rocket() -> _ {
 
 Rocket will use the installed default whenever TLS is operational.
 
+! note: An installed `CryptoProvider` replaces the configured `ciphers`.
+
+  Rocket uses an installed provider as is and does not apply `ciphers`. Clients
+  negotiate from the provider's cipher suites, and `prefer_server_cipher_order`
+  applies to the provider's order. To apply the configured `ciphers` with a
+  custom provider, read them via [`TlsConfig::ciphers()`] and build the provider
+  from them.
+
 [`rustls`]: @rustls
+[`TlsConfig::ciphers()`]: @api/v0.6-rc/rocket/tls/struct.TlsConfig.html#method.ciphers
 [`CryptoProvider`]: @rustls/crypto/struct.CryptoProvider.html
 [`ring`]: @rustls/crypto/ring/index.html
 [installing]: @rustls/crypto/struct.CryptoProvider.html#method.install_default
@@ -451,8 +487,36 @@ required such as when performing file system I/O via [`TempFile`] or wrapping
 synchronous work via [`rocket_sync_db_pools`].
 
 [`spawn_blocking`]: @tokio/task/fn.spawn_blocking.html
-[`TempFile`]: @api/master/rocket/fs/enum.TempFile.html
-[`rocket_sync_db_pools`]: @api/master/rocket_sync_db_pools/index.html
+[`TempFile`]: @api/v0.6-rc/rocket/fs/enum.TempFile.html
+[`rocket_sync_db_pools`]: @api/v0.6-rc/rocket_sync_db_pools/index.html
+
+### Wake Interval
+
+Rocket's _runtime waker_ is a separate thread that periodically wakes an idle
+Tokio worker to process I/O and timers. This works around a limitation in
+Tokio: a task that blocks or fails to yield can prevent I/O and timers from
+making progress even when other workers are idle.
+
+The `wake_interval` parameter sets the time between wakeups, in milliseconds.
+For example, the default value of `250` means that the waker requests a wakeup
+every 250 milliseconds. Decreasing this value can reduce the time spent
+stalled at the cost of more wakeup overhead. Increasing the value reduces
+wakeups but permits longer stalls.
+
+To disable the waker, set `wake_interval` to `0`. This is safe when all code
+executed by Rocket on your behalf, including code in dependencies, is
+[cooperative](../overview/#multitasking): they yield promptly and never block
+a worker, and potentially blocking or long operations are executed on separate
+threads via [`spawn_blocking`] or equivalent. Note that declaring a function
+`async` does not ensure that its code is cooperative.
+
+The waker requires an available worker to restore progress. If every worker
+is occupied by synchronous blocking operations or computations that do not
+yield, progress cannot resume until at least one worker becomes available.
+Current-thread (single-thread) runtimes necessarily fall into this category:
+whenever a task blocks the only worker, there can never be another worker to
+restore progress. As a result, the waker provides no benefit on these runtimes
+and is disabled irrespective of this setting.
 
 ## Extracting Values
 
@@ -520,7 +584,7 @@ fn rocket() -> _ {
 }
 ```
 
-[`Rocket::figment()`]: @api/master/rocket/struct.Rocket.html#method.figment
+[`Rocket::figment()`]: @api/v0.6-rc/rocket/struct.Rocket.html#method.figment
 
 ## Custom Providers
 
@@ -606,5 +670,5 @@ that if values like `port` and `address` are configured in `Config`, `App.toml`
 or `APP_` environment variables, Rocket will make use of them. The application
 can also extract its configuration, done here via the `Adhoc::config()` fairing.
 
-[`rocket::custom()`]: @api/master/rocket/fn.custom.html
-[`rocket::build()`]: @api/master/rocket/fn.build.html
+[`rocket::custom()`]: @api/v0.6-rc/rocket/fn.custom.html
+[`rocket::build()`]: @api/v0.6-rc/rocket/fn.build.html

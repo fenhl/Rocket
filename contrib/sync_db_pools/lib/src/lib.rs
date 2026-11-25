@@ -30,7 +30,7 @@
 //!
 //! ```toml
 //! [dependencies.rocket_sync_db_pools]
-//! version = "0.1.0"
+//! version = "=0.3.0-rc.1"
 //! features = ["diesel_sqlite_pool"]
 //! ```
 //!
@@ -83,7 +83,7 @@
 //! #[get("/logs/<id>")]
 //! async fn get_logs(conn: LogsDbConn, id: usize) -> Result<Logs> {
 //! # /*
-//!     conn.run(|c| Logs::by_id(c, id)).await
+//!     conn.run(move |c| Logs::by_id(c, id)).await
 //! # */
 //! # Ok(())
 //! }
@@ -166,7 +166,7 @@
 //! Lastly, databases can be configured via environment variables by specifying
 //! the `databases` table as detailed in the [Environment Variables
 //! configuration
-//! guide](https://rocket.rs/master/guide/configuration/#environment-variables):
+//! guide](https://rocket.rs/v0.6-rc/guide/configuration/#environment-variables):
 //!
 //! ```bash
 //! ROCKET_DATABASES='{my_db={url="db.sqlite"}}'
@@ -178,6 +178,37 @@
 //! ```bash
 //! ROCKET_DATABASES='{my_db={url="db.sqlite"},my_pg_db={url="postgres://root:root@localhost/my_pg_db"}}'
 //! ```
+//!
+//! ### Memcache
+//!
+//! The Memcache driver accepts two additional options in the `url` key:
+//!
+//!   * `connect_timeout` - max number of seconds to wait for a connection from
+//!     the driver's internal pool (defaults to `30`)
+//!   * `timeout` - max number of seconds for a TCP/TLS socket read or write
+//!     (unset by default; ignored for UDP and Unix sockets)
+//!
+//! For example, to set both options:
+//!
+//! ```toml
+//! [default.databases.cache]
+//! url = "memcache://localhost:11211?timeout=0.5&connect_timeout=2"
+//! pool_size = 16
+//! timeout = 5
+//! ```
+//!
+//! The `timeout` key outside of `url` configures Rocket's pool initialization
+//! and connection waits. It defaults to `5` seconds.
+//!
+//! Both URL options accept positive, finite numbers, including fractions.
+//! Invalid values, including values that round to zero or overflow, abort
+//! initialization. If an option is repeated, the first value is used.
+//!
+//! **Note:** Socket timeouts apply to individual reads and writes, and pool
+//! timeouts cannot interrupt synchronous driver calls. Neither URL option
+//! limits the time spent resolving DNS or establishing a TCP connection. As
+//! such, these options do not limit the total time spent executing a command
+//! or cancel commands.
 //!
 //! ## Guard Types
 //!
@@ -317,8 +348,8 @@
 //! | Postgres | [Diesel]              | `2`       | [`diesel::PgConnection`]       | `diesel_postgres_pool` |
 //! | MySQL    | [Diesel]              | `2`       | [`diesel::MysqlConnection`]    | `diesel_mysql_pool`    |
 //! | Postgres | [Rust-Postgres]       | `0.19`    | [`postgres::Client`]           | `postgres_pool`        |
-//! | Sqlite   | [`Rusqlite`]          | `0.31`    | [`rusqlite::Connection`]       | `sqlite_pool`          |
-//! | Memcache | [`memcache`]          | `0.17`    | [`memcache::Client`]           | `memcache_pool`        |
+//! | Sqlite   | [`Rusqlite`]          | `0.42`    | [`rusqlite::Connection`]       | `sqlite_pool`          |
+//! | Memcache | [`memcache`]          | `0.21`    | [`memcache::Client`]           | `memcache_pool`        |
 //!
 //! [Diesel]: https://diesel.rs
 //! [`diesel::SqliteConnection`]: https://docs.rs/diesel/2/diesel/sqlite/struct.SqliteConnection.html
@@ -327,10 +358,10 @@
 //! [Rust-Postgres]: https://github.com/sfackler/rust-postgres
 //! [`postgres::Client`]: https://docs.rs/postgres/0.19/postgres/struct.Client.html
 //! [`Rusqlite`]: https://github.com/jgallagher/rusqlite
-//! [`rusqlite::Connection`]: https://docs.rs/rusqlite/0.31/rusqlite/struct.Connection.html
+//! [`rusqlite::Connection`]: https://docs.rs/rusqlite/0.42/rusqlite/struct.Connection.html
 //! [`diesel::PgConnection`]: http://docs.diesel.rs/diesel/pg/struct.PgConnection.html
 //! [`memcache`]: https://github.com/aisk/rust-memcache
-//! [`memcache::Client`]: https://docs.rs/memcache/0.17/memcache/struct.Client.html
+//! [`memcache::Client`]: https://docs.rs/memcache/0.21/memcache/struct.Client.html
 //!
 //! The above table lists all the supported database adapters in this library.
 //! In order to use particular `Poolable` type that's included in this library,
@@ -349,7 +380,7 @@
 //! [request guards]: rocket::request::FromRequest
 //! [`Poolable`]: crate::Poolable
 
-#![doc(html_root_url = "https://api.rocket.rs/master/rocket_sync_db_pools")]
+#![doc(html_root_url = "https://api.rocket.rs/v0.6-rc/rocket_sync_db_pools")]
 #![doc(html_favicon_url = "https://rocket.rs/images/favicon.ico")]
 #![doc(html_logo_url = "https://rocket.rs/images/logo-boxed.png")]
 #![cfg_attr(nightly, feature(doc_cfg))]
@@ -381,6 +412,8 @@ mod error;
 mod connection;
 
 pub use self::poolable::{Poolable, PoolResult};
+#[cfg(feature = "memcache_pool")]
+pub use self::poolable::memcache_pool::MemcacheConnectionManager;
 pub use self::config::Config;
 pub use self::error::Error;
 
@@ -388,7 +421,7 @@ pub use rocket_sync_db_pools_codegen::*;
 pub use self::connection::*;
 
 /// Example of code generated by the `#[database]` attribute.
-#[cfg(all(nightly, doc, feature = "diesel_sqlite_pool"))]
+#[cfg(all(doc, feature = "diesel_sqlite_pool"))]
 pub mod example {
     use crate::diesel;
 

@@ -3,7 +3,7 @@
 [crates.io]: https://img.shields.io/crates/v/rocket_db_pools.svg
 [crate]: https://crates.io/crates/rocket_db_pools
 [docs.svg]: https://img.shields.io/badge/web-master-red.svg?style=flat&label=docs&colorB=d33847
-[crate docs]: https://api.rocket.rs/master/rocket_db_pools
+[crate docs]: https://api.rocket.rs/v0.6-rc/rocket_db_pools
 [ci.svg]: https://github.com/rwf2/Rocket/workflows/CI/badge.svg
 [ci]: https://github.com/rwf2/Rocket/actions
 
@@ -17,9 +17,15 @@ full usage details.
 
    ```toml
    [dependencies.rocket_db_pools]
-   version = "0.1.0"
-   features = ["sqlx_sqlite"]
+   version = "=0.4.0-rc.1"
+   features = ["sqlx_sqlite", "sqlx_macros"]
+
+   [dependencies.sqlx]
+   version = "0.9"
+   default-features = false
    ```
+
+   The direct `sqlx` dependency is required by SQLx's query macros.
 
 2. Choose a name for your database, here `sqlite_logs`. [Configure] _at least_ a
    URL for the database:
@@ -53,15 +59,15 @@ full usage details.
    ```rust
    #[get("/<id>")]
    async fn read(mut db: Connection<Logs>, id: i64) -> Result<Log> {
-       sqlx::query!("SELECT content FROM logs WHERE id = ?", id)
-           .fetch_one(&mut *db)
+       Ok(sqlx::query!("SELECT content FROM logs WHERE id = ?", id)
+           .fetch_one(&mut **db)
            .map_ok(|r| Log(r.content))
-           .await
+           .await?)
    }
    ```
 
-[database driver features]: https://api.rocket.rs/master/rocket_db_pools/index.html#supported-drivers
-[`Pool`]: https://api.rocket.rs/master/rocket_db_pools/index.html#supported-drivers
-[Configure]: https://api.rocket.rs/master/rocket_db_pools/index.html#configuration
-[Derive `Database`]: https://api.rocket.rs/master/rocket_db_pools/derive.Database.html
-[`Connection<Type>`]: https://api.rocket.rs/master/rocket_db_pools/struct.Connection.html
+[database driver features]: https://api.rocket.rs/v0.6-rc/rocket_db_pools/index.html#supported-drivers
+[`Pool`]: https://api.rocket.rs/v0.6-rc/rocket_db_pools/index.html#supported-drivers
+[Configure]: https://api.rocket.rs/v0.6-rc/rocket_db_pools/index.html#configuration
+[Derive `Database`]: https://api.rocket.rs/v0.6-rc/rocket_db_pools/derive.Database.html
+[`Connection<Type>`]: https://api.rocket.rs/v0.6-rc/rocket_db_pools/struct.Connection.html

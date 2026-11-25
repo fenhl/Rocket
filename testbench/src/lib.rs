@@ -26,10 +26,12 @@ pub enum Error {
     InvalidUri(uri::Uri<'static>),
     #[error("expected certificates are not present")]
     MissingCertificate,
+    #[error("invalid PEM: {0}")]
+    Pem(#[from] rustls_pki_types::pem::Error),
     #[error("bad request: {0}")]
     Request(#[from] reqwest::Error),
     #[error("IPC failure: {0}")]
-    Ipc(#[from] ipc_channel::ipc::IpcError),
+    Ipc(#[from] ipc_channel::IpcError),
     #[error("liftoff failed")]
     Liftoff(String, String),
 }

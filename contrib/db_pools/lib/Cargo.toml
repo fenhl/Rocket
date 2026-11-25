@@ -1,14 +1,14 @@
 [package]
 name = "rocket_db_pools"
-version = "0.1.0"
+version = "0.4.0-rc.1"
 authors = ["Sergio Benitez <sb@sergio.bz>", "Jeb Rosen <jeb@jebrosen.com>"]
 description = "Rocket async database pooling support"
-repository = "https://github.com/rwf2/Rocket/tree/master/contrib/db_pools"
+repository = "https://github.com/rwf2/Rocket/tree/v0.6-rc/contrib/db_pools"
 readme = "../README.md"
 keywords = ["rocket", "framework", "database", "pools"]
 license = "MIT OR Apache-2.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.95"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -18,70 +18,147 @@ workspace = true
 
 [features]
 # deadpool features
-deadpool_postgres = ["deadpool-postgres", "deadpool"]
+deadpool_postgres = ["deadpool-postgres", "deadpool", "dep:tokio-postgres"]
 deadpool_redis = ["deadpool-redis", "deadpool"]
 # sqlx features
-sqlx_mysql = ["sqlx", "sqlx/mysql", "log"]
-sqlx_postgres = ["sqlx", "sqlx/postgres", "log"]
-sqlx_sqlite = ["sqlx", "sqlx/sqlite", "log"]
-sqlx_macros = ["sqlx/macros"]
+sqlx = ["dep:sqlx", "dep:log", "dep:rustls", "dep:rustls-webpki", "dep:webpki-roots"]
+sqlx_mysql = ["sqlx", "sqlx/mysql-rsa", "dep:rsa"]
+sqlx_postgres = ["sqlx", "sqlx/postgres"]
+sqlx_sqlite = ["sqlx", "sqlx/sqlite", "dep:libsqlite3-sys"]
+sqlx_macros = ["sqlx", "sqlx/macros"]
 # diesel features
-diesel_postgres = ["diesel-async/postgres", "diesel-async/deadpool", "deadpool", "diesel"]
-diesel_mysql = ["diesel-async/mysql", "diesel-async/deadpool", "deadpool", "diesel"]
-# implicit features: mongodb
+diesel_postgres = [
+  "diesel-async/postgres", "diesel-async/deadpool", "deadpool", "diesel",
+  "dep:tokio-postgres",
+]
+diesel_mysql = [
+  "diesel-async/mysql", "diesel-async/deadpool", "deadpool", "diesel",
+  "dep:lru",
+]
+diesel_sqlite = [
+  "diesel-async/sqlite", "diesel-async/deadpool", "deadpool", "diesel",
+  "dep:libsqlite3-sys",
+]
+# mongodb features
+mongodb = [
+  "dep:mongodb", "dep:rustls", "dep:rustls-webpki", "dep:webpki-roots",
+  "dep:tokio-util",
+]
+
+# postgres features
+postgres_rustls_native_certs = [
+  "dep:tokio-postgres", "dep:tokio-postgres-rustls",
+  "dep:rustls-native-certs", "dep:rustls", "dep:rustls-webpki",
+]
 
 [dependencies.rocket]
 path = "../../../core/lib"
-version = "0.6.0-dev"
+version = "=0.6.0-rc.1"
 default-features = false
 
 [dependencies.rocket_db_pools_codegen]
 path = "../codegen"
-version = "0.1.0"
+version = "=0.4.0-rc.1"
 
 [dependencies.deadpool]
-version = "0.12.1"
+version = "0.13.1"
 default-features = false
 features = ["rt_tokio_1", "managed"]
 optional = true
 
 [dependencies.deadpool-postgres]
-version = "0.14"
+version = "0.14.2"
 default-features = false
 features = ["rt_tokio_1"]
 optional = true
 
 [dependencies.deadpool-redis]
-version = "0.16"
+version = "0.23.1"
 default-features = false
 features = ["rt_tokio_1"]
 optional = true
 
 [dependencies.mongodb]
-version = "3"
+version = "3.9.1"
 default-features = false
-features = ["compat-3-0-0", "rustls-tls"]
+features = ["compat-3-0-0", "rustls-tls", "dns-resolver"]
+optional = true
+
+[dependencies.tokio-util]
+# MongoDB permits versions that lack the `TaskTracker` it uses.
+version = "0.7.10"
+default-features = false
 optional = true
 
 [dependencies.diesel-async]
-version = "0.6.0"
+version = "0.10.0"
 default-features = false
 features = ["async-connection-wrapper"]
 optional = true
 
 [dependencies.diesel]
-version = "2.1"
+version = "2.4.0"
+default-features = false
+optional = true
+
+[dependencies.lru]
+# Diesel's MySQL driver permits versions affected by RUSTSEC-2026-0253.
+version = "0.18.2"
 default-features = false
 optional = true
 
 [dependencies.sqlx]
-version = "0.8"
+version = "0.9.1"
 default-features = false
-features = ["runtime-tokio-rustls"]
+features = ["runtime-tokio", "tls-rustls-ring"]
+optional = true
+
+[dependencies.libsqlite3-sys]
+# SQLx's wider range permits older bundles with known SQLite vulnerabilities.
+version = ">=0.40.0"
+default-features = false
+optional = true
+
+[dependencies.rsa]
+# SQLx's MySQL driver permits prereleases affected by RUSTSEC-2023-0071.
+version = "0.10.0"
+default-features = false
+optional = true
+
+[dependencies.tokio-postgres]
+# The Postgres drivers permit versions affected by RUSTSEC-2026-0178.
+version = "0.7.18"
+default-features = false
+features = ["runtime"]
+optional = true
+
+[dependencies.tokio-postgres-rustls]
+version = "0.14"
+default-features = false
+optional = true
+
+[dependencies.rustls]
+version = "0.23.46"
+default-features = false
+features = ["ring", "std", "tls12"]
+optional = true
+
+[dependencies.rustls-webpki]
+version = "0.103.16"
+default-features = false
+optional = true
+
+[dependencies.webpki-roots]
+version = "1.0.10"
+optional = true
+
+[dependencies.rustls-native-certs]
+version = "0.8.1"
+default-features = false
 optional = true
 
 [dependencies.log]
-version = "0.4"
+version = "0.4.18"
 default-features = false
 optional = true
 
@@ -89,6 +166,3 @@ optional = true
 path = "../../../core/lib"
 default-features = false
 features = ["json"]
-
-[build-dependencies]
-version_check = "0.9"

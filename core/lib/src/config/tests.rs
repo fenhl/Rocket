@@ -31,6 +31,32 @@ fn test_default_round_trip() {
 }
 
 #[test]
+fn test_missing_linger_is_default() {
+    use figment::{Provider, providers::Serialized};
+
+    // A complete configuration from before `linger` existed.
+    let data = Serialized::defaults(Config::default()).data().unwrap();
+    let mut dict = data[&Profile::Default].clone();
+    assert!(dict.remove(Config::LINGER).is_some());
+
+    let config: Config = Figment::from(Serialized::defaults(dict)).extract().unwrap();
+    assert_eq!(config.linger, 10);
+}
+
+#[test]
+fn test_missing_wake_interval_is_default() {
+    use figment::{Provider, providers::Serialized};
+
+    // A complete configuration from before `wake_interval` existed.
+    let data = Serialized::defaults(Config::default()).data().unwrap();
+    let mut dict = data[&Profile::Default].clone();
+    assert!(dict.remove(Config::WAKE_INTERVAL).is_some());
+
+    let config: Config = Figment::from(Serialized::defaults(dict)).extract().unwrap();
+    assert_eq!(config.wake_interval, 250);
+}
+
+#[test]
 fn test_profile_env() {
     figment::Jail::expect_with(|jail| {
         jail.set_env("ROCKET_PROFILE", "debug");
@@ -57,6 +83,7 @@ fn test_toml_file() {
                 ident = "Something Cool"
                 workers = 20
                 keep_alive = 10
+                linger = 30
                 log_level = "off"
                 cli_colors = 0
             "#)?;
@@ -66,6 +93,7 @@ fn test_toml_file() {
             workers: 20,
             ident: ident!("Something Cool"),
             keep_alive: 10,
+            linger: 30,
             log_level: None,
             cli_colors: CliColors::Never,
             ..Config::default()
@@ -108,6 +136,32 @@ fn test_toml_file() {
             ..Config::default()
         });
 
+        Ok(())
+    });
+}
+
+#[test]
+fn test_wake_interval() {
+    figment::Jail::expect_with(|jail| {
+        assert_eq!(Config::debug_default().wake_interval, 250);
+        assert_eq!(Config::release_default().wake_interval, 250);
+
+        jail.create_file("Rocket.toml", r#"
+            [default]
+            wake_interval = 100
+
+            [custom]
+            wake_interval = 500
+        "#)?;
+
+        assert_eq!(Config::from(Config::figment()).wake_interval, 100);
+        jail.set_env("ROCKET_PROFILE", "custom");
+        assert_eq!(Config::from(Config::figment()).wake_interval, 500);
+        jail.set_env("ROCKET_WAKE_INTERVAL", 0);
+        assert_eq!(Config::from(Config::figment()).wake_interval, 0);
+
+        let figment = Figment::from(Config::debug_default()).merge((Config::WAKE_INTERVAL, 25));
+        assert_eq!(Config::from(figment).wake_interval, 25);
         Ok(())
     });
 }

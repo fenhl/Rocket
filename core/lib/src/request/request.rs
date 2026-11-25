@@ -1,6 +1,6 @@
 use std::{io, fmt};
 use std::ops::RangeFrom;
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::Arc;
 use std::borrow::Cow;
 use std::str::FromStr;
 use std::future::Future;
@@ -10,12 +10,12 @@ use http::Version;
 use rocket_http::HttpVersion;
 use state::{TypeMap, InitCell};
 use futures::future::BoxFuture;
-use ref_swap::OptionRefSwap;
 
 use crate::{Rocket, Route, Orbit};
 use crate::request::{FromParam, FromSegments, FromRequest, Outcome, AtomicMethod};
 use crate::form::{self, ValueField, FromForm};
 use crate::data::Limits;
+use crate::router::{RouteId, AtomicRouteId};
 
 use crate::http::ProxyProto;
 use crate::http::{Method, Header, HeaderMap, ContentType, Accept, MediaType, CookieJar, Cookie};
@@ -45,7 +45,7 @@ pub(crate) struct ConnectionMeta {
     pub peer_endpoint: Option<Endpoint>,
     #[cfg_attr(not(feature = "mtls"), allow(dead_code))]
     pub peer_certs: Option<Arc<Certificates<'static>>>,
-    #[cfg_attr(feature = "tls", allow(dead_code))]
+    #[cfg_attr(not(feature = "tls"), allow(dead_code))]
     pub server_name: Option<String>,
 }
 
@@ -65,7 +65,7 @@ impl ConnectionMeta {
 /// Information derived from the request.
 pub(crate) struct RequestState<'r> {
     pub rocket: &'r Rocket<Orbit>,
-    pub route: OptionRefSwap<'r, Route>,
+    pub route: AtomicRouteId,
     pub cookies: CookieJar<'r>,
     pub accept: InitCell<Option<Accept>>,
     pub content_type: InitCell<Option<ContentType>>,
@@ -77,7 +77,7 @@ impl Clone for RequestState<'_> {
     fn clone(&self) -> Self {
         RequestState {
             rocket: self.rocket,
-            route: OptionRefSwap::new(self.route.load(Ordering::Acquire)),
+            route: self.route.clone(),
             cookies: self.cookies.clone(),
             accept: self.accept.clone(),
             content_type: self.content_type.clone(),
@@ -105,7 +105,7 @@ impl<'r> Request<'r> {
             connection: ConnectionMeta::default(),
             state: RequestState {
                 rocket,
-                route: OptionRefSwap::new(None),
+                route: AtomicRouteId::default(),
                 cookies: CookieJar::new(None, rocket),
                 accept: InitCell::new(),
                 content_type: InitCell::new(),
@@ -307,7 +307,7 @@ impl<'r> Request<'r> {
     /// Ideally, this will match the `Host` header in the request.
     #[cfg(feature = "tls")]
     #[inline(always)]
-    pub fn sni(&mut self) -> Option<&str> {
+    pub fn sni(&self) -> Option<&str> {
         self.connection.server_name.as_deref()
     }
 
@@ -397,6 +397,9 @@ impl<'r> Request<'r> {
     /// Returns the IP address of the configured
     /// [`ip_header`](crate::Config::ip_header) of the request if such a header
     /// is configured, exists and contains a valid IP address.
+    ///
+    /// The header's value is client-controlled unless a trusted proxy
+    /// overwrites it. See [`Config::ip_header`](crate::Config::ip_header).
     ///
     /// # Example
     ///
@@ -522,6 +525,14 @@ impl<'r> Request<'r> {
     /// If the `ip_header` exists and contains a valid IP address, that address
     /// is returned. Otherwise, if the address of the remote connection is
     /// known, that address is returned. Otherwise, `None` is returned.
+    ///
+    /// **Warning:** With the default configuration, any client can choose the
+    /// returned address by sending an `X-Real-IP` header. Do not rely on this
+    /// value for access control, rate limiting, or audit attribution unless
+    /// the application is only reachable through a proxy that overwrites the
+    /// header, or `ip_header` is disabled. See
+    /// [`Config::ip_header`](crate::Config::ip_header) for details. Use
+    /// [`Request::remote()`] to retrieve the connection's address directly.
     ///
     /// # Example
     ///
@@ -817,7 +828,7 @@ impl<'r> Request<'r> {
     /// ```
     #[inline(always)]
     pub fn route(&self) -> Option<&'r Route> {
-        self.state.route.load(Ordering::Acquire)
+        self.state.route.load().and_then(|id| self.rocket().router.get(id))
     }
 
     /// Invokes the request guard implementation for `T`, returning its outcome.
@@ -1102,8 +1113,8 @@ impl<'r> Request<'r> {
     /// Set `self`'s parameters given that the route used to reach this request
     /// was `route`. Use during routing when attempting a given route.
     #[inline(always)]
-    pub(crate) fn set_route(&self, route: &'r Route) {
-        self.state.route.store(Some(route), Ordering::Release)
+    pub(crate) fn set_route(&self, route: RouteId) {
+        self.state.route.store(route)
     }
 
     #[inline(always)]
@@ -1162,7 +1173,7 @@ impl<'r> Request<'r> {
                 Origin::new(uri.path(), uri.query().map(Cow::Borrowed))
             })
             .unwrap_or_else(|| {
-                errors.push(RequestError::InvalidUri(hyper.uri.clone()));
+                errors.push(RequestError::InvalidUri(hyper.uri.to_string()));
                 Origin::root().clone()
             });
 
@@ -1222,7 +1233,7 @@ impl<'r> Request<'r> {
 
 #[derive(Debug, Clone)]
 pub(crate) enum RequestError {
-    InvalidUri(hyper::Uri),
+    InvalidUri(String),
     BadMethod(hyper::Method),
 }
 

@@ -19,7 +19,6 @@ use crate::fairing::{Fairing, Fairings};
 use crate::phase::{Phase, Build, Building, Ignite, Igniting, Orbit, Orbiting};
 use crate::phase::{Stateful, StateRef, StateRefMut, State};
 use crate::http::uri::Origin;
-use crate::http::ext::IntoOwned;
 use crate::error::{Error, ErrorKind};
 
 /// The application server itself.
@@ -240,15 +239,13 @@ impl Rocket<Build> {
     }
 
     #[track_caller]
-    fn load<'a, B, T, F, M>(mut self, kind: &str, base: B, items: Vec<T>, m: M, f: F) -> Self
-        where B: TryInto<Origin<'a>> + Clone + fmt::Display,
-              B::Error: fmt::Display,
-              M: Fn(&Origin<'a>, T) -> T,
+    fn load<T, F, M>(mut self, kind: &str, base: &str, items: Vec<T>, m: M, f: F) -> Self
+        where M: Fn(&str, T) -> T,
               F: Fn(&mut Self, T),
               T: Clone + Trace,
     {
-        let mut base = match base.clone().try_into() {
-            Ok(origin) => origin.into_owned(),
+        let mut base = match Origin::parse_base(base) {
+            Ok(origin) => origin,
             Err(e) => {
                 error!(%base, location = %Location::caller(), "invalid {kind} base uri: {e}");
                 panic!("aborting due to {} base error", kind);
@@ -261,7 +258,7 @@ impl Rocket<Build> {
         }
 
         for unmounted_item in items {
-            f(&mut self, m(&base, unmounted_item.clone()))
+            f(&mut self, m(base.path().as_str(), unmounted_item.clone()))
         }
 
         self
@@ -274,6 +271,12 @@ impl Rocket<Build> {
     /// the route's URI. The URI resulting from joining the `base` URI and the
     /// route URI is called the route's _effective URI_, as this is the URI used
     /// for request matching during routing.
+    ///
+    /// Like a route URI, a `base` is never percent-decoded. Instead, it is
+    /// compared against the percent-decoded path of an incoming request. As
+    /// such, a `base` may contain any UTF-8 characters, and `%` is an ordinary
+    /// character: a `base` of `/häcker` matches requests to `/h%C3%A4cker/..`,
+    /// and a `base` of `/a%20b` matches requests to `/a%2520b/..`.
     ///
     /// A `base` URI is not allowed to have a query part. If a `base` _does_
     /// have a query part, it is ignored when producing the effective URI.
@@ -308,7 +311,7 @@ impl Rocket<Build> {
     ///
     /// Panics if either:
     ///
-    ///   * the `base` mount point is not a valid origin URI without dynamic
+    ///   * the `base` mount point is not a valid route URI without dynamic
     ///     parameters
     ///
     ///   * any route URI is not a valid origin URI. (**Note:** _This kind of
@@ -358,21 +361,22 @@ impl Rocket<Build> {
     /// ```
     #[must_use]
     #[track_caller]
-    pub fn mount<'a, B, R>(self, base: B, routes: R) -> Self
-        where B: TryInto<Origin<'a>> + Clone + fmt::Display,
-              B::Error: fmt::Display,
-              R: Into<Vec<Route>>
+    pub fn mount<R>(self, base: &str, routes: R) -> Self
+        where R: Into<Vec<Route>>
     {
         self.load("route", base, routes.into(),
-            |base, route| route.rebase(base.clone()),
+            |base, route| route.rebase(base),
             |r, route| r.0.routes.push(route))
     }
 
     /// Registers all of the catchers in the supplied vector, scoped to `base`.
     ///
+    /// As with [`Rocket::mount()`], `base` is never percent-decoded. Instead,
+    /// it is compared against the percent-decoded path of the erroring request.
+    ///
     /// # Panics
     ///
-    /// Panics if `base` is not a valid static path: a valid origin URI without
+    /// Panics if `base` is not a valid static path: a valid route URI without
     /// dynamic parameters.
     ///
     /// # Examples
@@ -397,13 +401,11 @@ impl Rocket<Build> {
     /// }
     /// ```
     #[must_use]
-    pub fn register<'a, B, C>(self, base: B, catchers: C) -> Self
-        where B: TryInto<Origin<'a>> + Clone + fmt::Display,
-              B::Error: fmt::Display,
-              C: Into<Vec<Catcher>>
+    pub fn register<C>(self, base: &str, catchers: C) -> Self
+        where C: Into<Vec<Catcher>>
     {
         self.load("catcher", base, catchers.into(),
-            |base, catcher| catcher.rebase(base.clone()),
+            |base, catcher| catcher.rebase(base),
             |r, catcher| r.0.catchers.push(catcher))
     }
 
@@ -649,8 +651,15 @@ impl Rocket<Ignite> {
     }
 
     pub(crate) fn into_orbit(self, endpoints: Vec<Endpoint>) -> Rocket<Orbit> {
+        // The `Alt-Svc` header value that advertises HTTP/3, if it's served.
+        let alt_svc = endpoints.iter()
+            .find_map(|e| e.quic())
+            .filter(|_| cfg!(feature = "http3-preview"))
+            .map(|addr| format!("h3=\":{}\"", addr.port()));
+
         Rocket(Orbiting {
             endpoints,
+            alt_svc,
             router: self.0.router,
             fairings: self.0.fairings,
             figment: self.0.figment,
@@ -667,6 +676,8 @@ impl Rocket<Ignite> {
     }
 
     async fn _launch<L: Listener + 'static>(self, listener: L) -> Result<Rocket<Ignite>, Error> {
+        let interval = Duration::from_millis(self.config.wake_interval.into());
+        let _waker = crate::util::RuntimeWaker::start(interval)?;
         let rocket = self.listen_and_serve(listener, |rocket| async move {
             let rocket = Arc::new(rocket);
 
@@ -700,11 +711,13 @@ impl Rocket<Orbit> {
     /// finished processing requests without respect for ongoing responses. That
     /// is, `server` resolves even when there are running tasks that are
     /// generating a response. So, `server` resolving implies little to nothing
-    /// about the state of connections. As a result, we depend on the timing of
-    /// grace + mercy + some buffer to determine when all connections should be
-    /// closed, thus all tasks should be complete, thus all references to
-    /// `Arc<Rocket>` should be dropped and we can get back a unique reference.
+    /// about the state of connections. As a result, we wait until all tasks are
+    /// complete, thus all references to `Arc<Rocket>` are dropped and we can
+    /// get back a unique reference. Since all connections should be closed
+    /// after grace + mercy, we wait at most grace + mercy + some buffer.
     async fn try_wait_shutdown(self: Arc<Self>) -> Result<Rocket<Ignite>, Arc<Self>> {
+        use tokio::time::{sleep_until, Instant};
+
         info!("Shutting down. Waiting for shutdown fairings and pending I/O...");
         tokio::spawn({
             let rocket = self.clone();
@@ -712,10 +725,12 @@ impl Rocket<Orbit> {
         });
 
         let config = &self.config.shutdown;
-        let wait = Duration::from_micros(250);
-        for period in [wait, config.grace(), wait, config.mercy(), wait * 4] {
-            if Arc::strong_count(&self) == 1 { break }
-            tokio::time::sleep(period).await;
+        let buffer = Duration::from_micros(1500);
+        let deadline = Instant::now() + config.grace() + config.mercy() + buffer;
+        let mut wait = Duration::from_micros(250);
+        while Arc::strong_count(&self) != 1 && Instant::now() < deadline {
+            sleep_until((Instant::now() + wait).min(deadline)).await;
+            wait = Duration::from_millis(10);
         }
 
         match Arc::try_unwrap(self) {
@@ -1166,9 +1181,16 @@ impl<P: Phase> Rocket<P> {
     /// # Error
     ///
     /// If there is a problem starting the application or the application fails
-    /// unexpectedly while running, an [`Error`] is returned. Note that a value
-    /// of type `Error` panics if dropped without first being inspected. See the
+    /// unexpectedly while running, an [`Error`] is returned. Use
+    /// [`Error::report()`] to log the error and obtain an exit code. See the
     /// [`Error`] documentation for more information.
+    ///
+    /// # Listener
+    ///
+    /// This method binds to the network interface described by the
+    /// configuration via [`DefaultListener`]. To bind via a different listener,
+    /// use [`Rocket::launch_with()`]. To serve on an existing listener, use
+    /// [`Rocket::launch_on()`] or [`Rocket::try_launch_on()`].
     ///
     /// # Example
     ///
@@ -1185,6 +1207,36 @@ impl<P: Phase> Rocket<P> {
         self.launch_with::<DefaultListener>().await
     }
 
+    /// Like [`Rocket::launch()`] but binds via the listener `B`.
+    ///
+    /// The instance is first [ignited](Rocket::ignite()). Then, a listener is
+    /// created via [`B::bind()`](Bind::bind()), which reads its configuration
+    /// from the ignited instance. Finally, the instance is launched on the
+    /// listener as described in [`Rocket::launch()`]. [`Rocket::launch()`] is
+    /// equivalent to `launch_with::<DefaultListener>()`.
+    ///
+    /// Use this method to launch on a listener that is configured via Rocket's
+    /// configuration, either one of Rocket's own or a custom implementation of
+    /// [`Bind`].
+    ///
+    /// # Error
+    ///
+    /// In addition to the errors returned by [`Rocket::launch()`], returns an
+    /// [`ErrorKind::Bind`] error if `B` fails to bind.
+    ///
+    /// # Example
+    ///
+    /// Launch on a plain TCP listener, ignoring any `tls` configuration:
+    ///
+    /// ```rust,no_run
+    /// use rocket::listener::tcp::TcpListener;
+    ///
+    /// #[rocket::main]
+    /// async fn main() -> Result<(), rocket::Error> {
+    ///     let rocket = rocket::build().launch_with::<TcpListener>().await?;
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn launch_with<B: Bind>(self) -> Result<Rocket<Ignite>, Error> {
         let rocket = self.into_ignite().await?;
         let bind_endpoint = B::bind_endpoint(&rocket).ok();
@@ -1208,6 +1260,32 @@ impl<P: Phase> Rocket<P> {
         }
     }
 
+    /// Like [`Rocket::launch_on()`] but takes a future that resolves to a
+    /// listener or an error.
+    ///
+    /// The future `listener` is awaited first. If it resolves to an error, an
+    /// [`ErrorKind::Bind`] error is returned. Otherwise, the instance is
+    /// [ignited](Rocket::ignite()) and launched on the resulting listener as
+    /// described in [`Rocket::launch()`].
+    ///
+    /// Use this method to bind a listener without Rocket's configuration and
+    /// report a binding failure as a Rocket [`Error`].
+    ///
+    /// # Example
+    ///
+    /// Launch on a TCP listener bound to a random, available port:
+    ///
+    /// ```rust,no_run
+    /// use std::net::Ipv4Addr;
+    /// use rocket::listener::tcp::TcpListener;
+    ///
+    /// #[rocket::main]
+    /// async fn main() -> Result<(), rocket::Error> {
+    ///     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0));
+    ///     let rocket = rocket::build().try_launch_on(listener).await?;
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn try_launch_on<L, F, E>(self, listener: F) -> Result<Rocket<Ignite>, Error>
         where L: Listener + 'static,
               F: Future<Output = Result<L, E>>,
@@ -1217,6 +1295,28 @@ impl<P: Phase> Rocket<P> {
         self.into_ignite().await?._launch(listener).await
     }
 
+    /// Like [`Rocket::launch()`] but launches on the existing `listener`.
+    ///
+    /// The instance is [ignited](Rocket::ignite()) and launched on `listener`
+    /// as described in [`Rocket::launch()`]. Rocket's configuration is not
+    /// consulted to bind: `listener` is used as is.
+    ///
+    /// Use this method when your application has already created a listener. To
+    /// await a listener that may fail to bind, use [`Rocket::try_launch_on()`].
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use std::net::Ipv4Addr;
+    /// use rocket::listener::tcp::TcpListener;
+    ///
+    /// #[rocket::main]
+    /// async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 8000)).await?;
+    ///     let rocket = rocket::build().launch_on(listener).await?;
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn launch_on<L>(self, listener: L) -> Result<Rocket<Ignite>, Error>
         where L: Listener + 'static,
     {

@@ -1,20 +1,20 @@
 [package]
 name = "rocket_sync_db_pools"
-version = "0.1.0"
+version = "0.3.0-rc.1"
 authors = ["Sergio Benitez <sb@sergio.bz>"]
 description = "Rocket async database pooling support for sync database drivers."
-repository = "https://github.com/rwf2/Rocket/tree/master/contrib/sync_db_pools"
+repository = "https://github.com/rwf2/Rocket/tree/v0.6-rc/contrib/sync_db_pools"
 readme = "../README.md"
 keywords = ["rocket", "framework", "database", "pools"]
 license = "MIT OR Apache-2.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.95"
 
 [lints]
 workspace = true
 
 [features]
-diesel_sqlite_pool = ["diesel/sqlite", "diesel/r2d2"]
+diesel_sqlite_pool = ["diesel/sqlite", "diesel/r2d2", "dep:libsqlite3-sys"]
 diesel_postgres_pool = ["diesel/postgres", "diesel/r2d2"]
 diesel_mysql_pool = ["diesel/mysql", "diesel/r2d2"]
 sqlite_pool = ["rusqlite", "r2d2_sqlite"]
@@ -22,34 +22,35 @@ postgres_pool = ["postgres", "r2d2_postgres"]
 memcache_pool = ["memcache"]
 
 [dependencies]
-r2d2 = "0.8"
-tokio = { version = "1.6.1", features = ["rt", "rt-multi-thread"] }
-serde = { version = "1.0", features = ["derive"] }
+r2d2 = "0.8.10"
+tokio = { version = "1.54.1", features = ["rt", "rt-multi-thread"] }
+serde = { version = "1.0.220", features = ["derive"] }
 
-diesel = { version = "2.0.0", default-features = false, optional = true }
+diesel = { version = "2.4.0", default-features = false, optional = true }
+# Diesel's wider range permits older bundles with known SQLite vulnerabilities.
+libsqlite3-sys = { version = ">=0.40.0", default-features = false, optional = true }
 
-postgres = { version = "0.19", optional = true }
+postgres = { version = "0.19.14", optional = true }
 r2d2_postgres = { version = "0.18", optional = true }
 
-rusqlite = { version = "0.31.0", optional = true }
-r2d2_sqlite = { version = "0.24.0", optional = true }
+rusqlite = { version = "0.42", optional = true }
+r2d2_sqlite = { version = "0.37", optional = true }
 
-memcache = { version = "0.17.2", optional = true }
+memcache = { version = "0.21", optional = true }
 
 [dependencies.rocket_sync_db_pools_codegen]
-version = "0.1.0"
+version = "=0.3.0-rc.1"
 path = "../codegen"
 
 [dependencies.rocket]
-version = "0.6.0-dev"
+version = "=0.6.0-rc.1"
 path = "../../../core/lib"
 default-features = false
 
 [build-dependencies]
-version_check = "0.9.1"
+version_check = "0.9.4"
 
 [dev-dependencies.rocket]
-version = "0.6.0-dev"
 path = "../../../core/lib"
 default-features = false
 features = ["trace"]

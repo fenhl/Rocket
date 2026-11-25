@@ -161,6 +161,10 @@ pub type Outcome<S, E> = outcome::Outcome<S, (Status, E), Status>;
 ///     via [`Request::client_ip()`]. If the client's IP address is not known,
 ///     the request is forwarded with a 500 Internal Server Error status.
 ///
+///     **Warning:** By default, the address can be chosen by the client via
+///     the `X-Real-IP` header. See [`Config::ip_header`] before using this
+///     guard for access control, rate limiting, or audit attribution.
+///
 ///   * **ProxyProto**
 ///
 ///     Extracts the protocol of the incoming request as a [`ProxyProto`] via
@@ -190,6 +194,7 @@ pub type Outcome<S, E> = outcome::Outcome<S, (Status, E), Status>;
 ///     forwarded with the same status code as the original forward.
 ///
 /// [`Config`]: crate::config::Config
+/// [`Config::ip_header`]: crate::config::Config::ip_header
 ///
 /// # Example
 ///
@@ -375,7 +380,7 @@ pub type Outcome<S, E> = outcome::Outcome<S, (Status, E), Status>;
 /// Notice that these request guards provide access to *borrowed* data (`&'a
 /// User` and `Admin<'a>`) as the data is now owned by the request's cache.
 ///
-/// [request-local state]: https://rocket.rs/master/guide/state/#request-local-state
+/// [request-local state]: https://rocket.rs/v0.6-rc/guide/state/#request-local-state
 #[crate::async_trait]
 pub trait FromRequest<'r>: Sized {
     /// The associated error to be returned if derivation fails.

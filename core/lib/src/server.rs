@@ -1,6 +1,7 @@
 use std::io;
 use std::pin::pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use hyper::service::service_fn;
@@ -8,15 +9,15 @@ use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto::Builder;
 use futures::{Future, TryFutureExt};
 use tokio::io::{AsyncRead, AsyncWrite};
+use tracing::Instrument;
 
 use crate::{Ignite, Orbit, Request, Rocket};
 use crate::request::ConnectionMeta;
 use crate::erased::{ErasedRequest, ErasedResponse, ErasedIoHandler};
-use crate::listener::{Listener, Connection, BouncedExt, CancellableExt};
+use crate::listener::{Listener, Connection, BouncedExt, CancellableExt, Lingering};
 use crate::error::log_server_error;
 use crate::data::{IoStream, RawStream};
-use crate::util::{spawn_inspect, FutureExt, ReaderStream};
-use crate::http::Status;
+use crate::util::{spawn_inspect, Detach, FutureExt, ReaderStream};
 use crate::trace::{Trace, TraceAll};
 
 type Result<T, E = crate::Error> = std::result::Result<T, E>;
@@ -27,30 +28,36 @@ impl Rocket<Orbit> {
         uri = %parts.uri,
         autohandled
     ))]
-    async fn service<T: for<'a> Into<RawStream<'a>>>(
+    async fn service<T: for<'a> Into<RawStream<'a>> + Send + 'static>(
         self: Arc<Self>,
         parts: http::request::Parts,
         stream: T,
         upgrade: Option<hyper::upgrade::OnUpgrade>,
         connection: ConnectionMeta,
-    ) -> Result<hyper::Response<ReaderStream<ErasedResponse>>, http::Error> {
+    ) -> io::Result<hyper::Response<ReaderStream<ErasedResponse>>> {
         connection.trace_debug();
+        let version = parts.version;
+        let grace = self.shutdown.grace.clone();
         let request = ErasedRequest::new(self, parts, |rocket, parts| {
             Request::from_hyp(rocket, parts, connection).unwrap_or_else(|e| e)
         });
 
         span_debug!("request headers" => request.inner().headers().iter().trace_all_debug());
-        let mut response = request.into_response(
+        let response = request.into_response(
             stream,
             |rocket, request, data| Box::pin(rocket.preprocess(request, data)),
-            |token, rocket, request, data| Box::pin(async move {
-                if !request.errors.is_empty() {
-                    return rocket.dispatch_error(Status::BadRequest, request).await;
-                }
+            |token, rocket, request, data| Box::pin(rocket.dispatch(token, request, data))
+        );
 
-                rocket.dispatch(token, request, data).await
-            })
-        ).await;
+        // If this future is dropped before the response is ready, e.g. because
+        // the client disconnected, the request is spawned to run to completion,
+        // response fairings included, and its response is discarded. Either
+        // way, it's cancelled when the shutdown grace period ends, which is
+        // when I/O is cut off for clients that are still connected.
+        let response = Detach::new(response.race(grace).in_current_span());
+        let Some(mut response) = response.await.left() else {
+            return Err(io::Error::new(io::ErrorKind::TimedOut, "shutdown grace period elapsed"));
+        };
 
         // TODO: Should upgrades be handled in dispatch?
         response.inner().trace_info();
@@ -67,19 +74,15 @@ impl Rocket<Orbit> {
             builder = builder.header(header.name().as_str(), header.value());
         }
 
+        // Send an empty HTTP/2 response as headers alone: h2 rejects a 304 with
+        // a nonzero content-length followed by an empty DATA frame. HTTP/1
+        // takes the body path because hyper otherwise drops that header.
+        if version == http::Version::HTTP_2 && response.inner().body().is_empty() {
+            return builder.body(ReaderStream::empty(response)).map_err(io::Error::other);
+        }
+
         let chunk_size = response.inner().body().max_chunk_size();
-        builder.body(ReaderStream::with_capacity(response, chunk_size))
-    }
-
-    pub(crate) fn alt_svc(&self) -> Option<&'static str> {
-        cfg!(feature = "http3-preview").then(|| {
-            static ALT_SVC: state::InitCell<Option<String>> = state::InitCell::new();
-
-            ALT_SVC.get_or_init(|| {
-                let addr = self.endpoints().find_map(|v| v.quic())?;
-                Some(format!("h3=\":{}\"", addr.port()))
-            }).as_deref()
-        })?
+        builder.body(ReaderStream::with_capacity(response, chunk_size)).map_err(io::Error::other)
     }
 }
 
@@ -116,16 +119,17 @@ impl Rocket<Ignite> {
         if let (Some(addr), Some(tls)) = (endpoint.tcp(), endpoint.tls_config()) {
             use crate::error::ErrorKind;
 
-            let h3listener = crate::listener::quic::QuicListener::bind(addr, tls.clone())
+            let quic = crate::listener::quic::bind(addr, tls)
                 .map_err(|e| ErrorKind::Bind(Some(endpoint.clone()), Box::new(e)))
                 .await?;
 
-            let rocket = self.into_orbit(vec![h3listener.endpoint()?, endpoint]);
+            let quic_endpoint = crate::listener::Endpoint::Quic(quic.local_addr()?).with_tls(tls);
+            let rocket = self.into_orbit(vec![quic_endpoint, endpoint]);
             let rocket = orbit_callback(rocket).await?;
 
             let http12 = tokio::task::spawn(rocket.clone().serve12(listener));
-            let http3 = tokio::task::spawn(rocket.clone().serve3(h3listener));
-            let (r1, r2) = tokio::join!(http12, http3);
+            let http3 = tokio::task::spawn(rocket.clone().serve3(quic));
+            let (r1, r2) = futures::join!(http12, http3);
             r1.map_err(|e| ErrorKind::Liftoff(Err(rocket.clone()), e))??;
             r2.map_err(|e| ErrorKind::Liftoff(Err(rocket.clone()), e))??;
             return Ok(rocket);
@@ -151,7 +155,6 @@ impl Rocket<Orbit> {
         let mut builder = Builder::new(TokioExecutor::new());
         let keep_alive = Duration::from_secs(self.config.keep_alive.into());
         builder.http1()
-            .half_close(true)
             .timer(TokioTimer::new())
             .keep_alive(keep_alive > Duration::ZERO)
             .preserve_header_case(true)
@@ -167,6 +170,7 @@ impl Rocket<Orbit> {
             }
         }
 
+        let linger = Duration::from_secs(self.config.linger.into());
         let (listener, server) = (Arc::new(listener.bounced()), Arc::new(builder));
         while let Some(accept) = listener.accept().race(self.shutdown()).await.left().transpose()? {
             let (listener, rocket, server) = (listener.clone(), self.clone(), server.clone());
@@ -177,13 +181,25 @@ impl Rocket<Orbit> {
                     conn.certificates(),
                     conn.server_name()
                 );
+
+                // A connection upgraded by a `101` response belongs to its I/O
+                // handler, which may shut down writes and keep reading, so it
+                // must not linger.
+                let upgraded = Arc::new(AtomicBool::new(false));
                 let service = service_fn(|mut req| {
                     let upgrade = hyper::upgrade::on(&mut req);
                     let (parts, incoming) = req.into_parts();
+                    let upgraded = upgraded.clone();
                     rocket.clone().service(parts, incoming, Some(upgrade), meta.clone())
+                        .inspect_ok(move |response| {
+                            if response.status() == http::StatusCode::SWITCHING_PROTOCOLS {
+                                upgraded.store(true, Ordering::Release);
+                            }
+                        })
                 });
 
-                let io = TokioIo::new(conn.cancellable(rocket.shutdown.clone()));
+                let io = conn.cancellable(rocket.shutdown.clone());
+                let io = TokioIo::new(Lingering::new(io, linger, upgraded.clone()));
                 let mut server = pin!(server.serve_connection_with_upgrades(io, service));
                 match server.as_mut().race(rocket.shutdown()).await.left() {
                     Some(result) => result,
@@ -199,35 +215,107 @@ impl Rocket<Orbit> {
     }
 
     #[cfg(feature = "http3-preview")]
-    async fn serve3(self: Arc<Self>, listener: crate::listener::quic::QuicListener) -> Result<()> {
-        let rocket = self.clone();
-        let listener = Arc::new(listener);
-        while let Some(Some(accept)) = listener.accept().race(rocket.shutdown()).await.left() {
-            let (listener, rocket) = (listener.clone(), rocket.clone());
-            spawn_inspect(|e: &io::Error| log_server_error(e), async move {
-                let mut stream = listener.connect(accept).race_io(rocket.shutdown()).await?;
-                while let Some(mut conn) = stream.accept().race_io(rocket.shutdown()).await? {
-                    let rocket = rocket.clone();
-                    spawn_inspect(|e: &io::Error| log_server_error(e), async move {
-                        let meta = ConnectionMeta::new(conn.endpoint(), None, None);
-                        let rx = conn.rx.cancellable(rocket.shutdown.clone());
-                        let response = rocket.clone()
-                            .service(conn.parts, rx, None, meta)
-                            .map_err(io::Error::other)
-                            .race_io(rocket.shutdown.mercy.clone())
-                            .await?;
+    async fn serve3(self: Arc<Self>, endpoint: quinn::Endpoint) -> Result<()> {
+        use std::future::IntoFuture;
+        use std::io::ErrorKind::TimedOut;
+        use either::Either;
+        use crate::listener::{Endpoint, quic::{self, QuicRx, QuicTx}};
 
-                        let grace = rocket.shutdown.grace.clone();
-                        match conn.tx.send_response(response).race(grace).await.left() {
-                            Some(result) => result,
-                            None => Ok(conn.tx.cancel()),
+        while let Some(Some(incoming)) = endpoint.accept().race(self.shutdown()).await.left() {
+            let rocket = self.clone();
+            spawn_inspect(quic::log_error, async move {
+                let conn = match incoming.into_future().race(rocket.shutdown()).await {
+                    Either::Left(conn) => conn.map_err(io::Error::other)?,
+                    Either::Right(_) => return Ok(()),
+                };
+
+                let remote = Endpoint::Quic(conn.remote_address()).assume_tls();
+                let (certs, sni) = (quic::certificates(&conn), quic::server_name(&conn));
+                let meta = ConnectionMeta::new(Ok(remote), certs, sni.as_deref());
+                // Accept request headers as large as hyper accepts for HTTP/2.
+                let mut builder = h3::server::builder();
+                let h3 = builder.max_field_section_size(16 * 1024)
+                    .build(h3_quinn::Connection::new(conn.clone()));
+
+                // The client may never let the control streams open, so stop
+                // waiting when shutdown starts.
+                let mut h3: quic::Connection = match h3.race(rocket.shutdown()).await {
+                    Either::Left(h3) => h3.map_err(io::Error::other)?,
+                    Either::Right(_) => return Ok(()),
+                };
+
+                loop {
+                    let resolver = match h3.accept().race(rocket.shutdown()).await {
+                        Either::Left(Ok(Some(resolver))) => resolver,
+                        // The client sent `GOAWAY` and every request is done here.
+                        // As at shutdown, wait for it to close the connection.
+                        Either::Left(Ok(None)) => {
+                            conn.closed().race(rocket.shutdown.grace.clone()).await;
+                            break;
                         }
+                        Either::Left(Err(e)) if e.is_h3_no_error() => break,
+                        Either::Left(Err(e)) => return Err(io::Error::other(e)),
+                        Either::Right(_) => {
+                            // Send `GOAWAY` with the ID of the first request that
+                            // won't be processed (RFC 9114 §5.2): the one after the
+                            // last accepted. `accept()` isn't called again, so no
+                            // request at or above that ID is accepted. Only the
+                            // client knows when it has received every response, so
+                            // wait for it to close the connection.
+                            let grace = rocket.shutdown.grace.clone();
+                            if let Either::Left(sent) = h3.shutdown(1).race(grace.clone()).await {
+                                sent.map_err(io::Error::other)?;
+                                conn.closed().race(grace).await;
+                            }
+
+                            break;
+                        }
+                    };
+
+                    let (rocket, meta, conn) = (rocket.clone(), meta.clone(), conn.clone());
+                    spawn_inspect(quic::log_error, async move {
+                        // Limit the time to read headers as `serve12` does for HTTP/1.
+                        // The request was accepted before any `GOAWAY`, so it's
+                        // served if its headers arrive within the grace period.
+                        let headers = resolver.resolve_request();
+                        let headers = tokio::time::timeout(Duration::from_secs(15), headers);
+                        let grace = rocket.shutdown.grace.clone();
+                        let (req, stream) = match headers.race(grace).await {
+                            Either::Left(Ok(headers)) => headers.map_err(io::Error::other)?,
+                            Either::Left(Err(e)) => return Err(io::Error::new(TimedOut, e)),
+                            Either::Right(_) => return Ok(()),
+                        };
+
+                        let (tx, rx) = stream.split();
+                        let mut tx = QuicTx::new(tx, rocket.shutdown.grace.clone());
+                        let rx = QuicRx(rx).cancellable(rocket.shutdown.clone());
+                        // `service()` times out when the shutdown grace period ends.
+                        let service = rocket.clone().service(req.into_parts().0, rx, None, meta);
+                        let response = match service.await {
+                            Ok(response) => response,
+                            Err(e) if e.kind() == TimedOut => return Ok(()),
+                            Err(e) => return Err(e),
+                        };
+
+                        // A body may wait indefinitely for data, so stop waiting when
+                        // the connection closes or the grace period ends.
+                        let stop = rocket.shutdown.grace.clone().race(conn.closed());
+                        let response = quic::send_response(&mut tx, response).race(stop).await;
+                        response.left().unwrap_or(Ok(()))
                     });
                 }
 
                 Ok(())
             });
         }
+
+        // Refuse new connections and give existing ones a chance to close.
+        // Waiting in a task lets shutdown fairings start now. The task holds
+        // on to `self`, so `try_wait_shutdown()` still waits for it.
+        endpoint.set_server_config(None);
+        tokio::spawn(async move {
+            endpoint.wait_idle().race(self.shutdown.mercy.clone()).await;
+        });
 
         Ok(())
     }

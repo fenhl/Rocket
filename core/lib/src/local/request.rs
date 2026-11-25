@@ -246,10 +246,10 @@ macro_rules! pub_request_impl {
     #[cfg_attr(nightly, doc(cfg(feature = "mtls")))]
     pub fn identity<C: std::io::Read>(mut self, reader: C) -> Self {
         use std::sync::Arc;
+        use rustls::pki_types::{CertificateDer, pem::PemObject};
         use crate::listener::Certificates;
 
-        let mut reader = std::io::BufReader::new(reader);
-        self._request_mut().connection.peer_certs = rustls_pemfile::certs(&mut reader)
+        self._request_mut().connection.peer_certs = CertificateDer::pem_reader_iter(reader)
             .collect::<Result<Vec<_>, _>>()
             .map(|certs| Arc::new(Certificates::from(certs)))
             .ok();
@@ -287,7 +287,7 @@ macro_rules! pub_request_impl {
     /// [`ContentType::JSON`](crate::http::ContentType::JSON).
     ///
     /// If `value` fails to serialize, the body is set to empty. The
-    /// `Content-Type` header is _always_ set.
+    /// `Content-Type` header is _always_ set, replacing any existing one.
     ///
     /// # Examples
     ///
@@ -306,22 +306,58 @@ macro_rules! pub_request_impl {
     /// let task = Task { id: 10, complete: false };
     ///
     /// let request: LocalRequest = request;
-    /// let req = request.json(&task);
+    /// let req = request.header(ContentType::Plain).json(&task);
     /// assert_eq!(req.content_type(), Some(&ContentType::JSON));
     /// # });
     /// ```
     #[cfg(feature = "json")]
     #[cfg_attr(nightly, doc(cfg(feature = "json")))]
-    pub fn json<T: crate::serde::Serialize>(self, value: &T) -> Self {
+    pub fn json<T: crate::serde::Serialize>(mut self, value: &T) -> Self {
         let json = serde_json::to_vec(&value).unwrap_or_default();
-        self.header(crate::http::ContentType::JSON).body(json)
+        self._request_mut().replace_header(crate::http::ContentType::JSON);
+        self.body(json)
+    }
+
+    /// Sets the body to `value` serialized as XML with `Content-Type`
+    /// [`ContentType::XML`](crate::http::ContentType::XML).
+    ///
+    /// If `value` fails to serialize, the body is set to empty. The
+    /// `Content-Type` header is _always_ set, replacing any existing one.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    #[doc = $import]
+    /// use rocket::serde::Serialize;
+    /// use rocket::http::ContentType;
+    ///
+    /// #[derive(Serialize)]
+    /// struct Task {
+    ///     id: usize,
+    ///     complete: bool,
+    /// }
+    ///
+    /// # Client::_test(|_, request, _| {
+    /// let task = Task { id: 10, complete: false };
+    ///
+    /// let request: LocalRequest = request;
+    /// let req = request.header(ContentType::Plain).xml(&task);
+    /// assert_eq!(req.content_type(), Some(&ContentType::XML));
+    /// # });
+    /// ```
+    #[cfg(feature = "xml")]
+    #[cfg_attr(nightly, doc(cfg(feature = "xml")))]
+    pub fn xml<T: crate::serde::Serialize>(mut self, value: &T) -> Self {
+        let xml = quick_xml::se::to_string(value).unwrap_or_default();
+        self._request_mut().replace_header(crate::http::ContentType::XML);
+        self.body(xml)
     }
 
     /// Sets the body to `value` serialized as MessagePack with `Content-Type`
     /// [`ContentType::MsgPack`](crate::http::ContentType::MsgPack).
     ///
     /// If `value` fails to serialize, the body is set to empty. The
-    /// `Content-Type` header is _always_ set.
+    /// `Content-Type` header is _always_ set, replacing any existing one.
     ///
     /// # Examples
     ///
@@ -340,15 +376,16 @@ macro_rules! pub_request_impl {
     /// let task = Task { id: 10, complete: false };
     ///
     /// let request: LocalRequest = request;
-    /// let req = request.msgpack(&task);
+    /// let req = request.header(ContentType::Plain).msgpack(&task);
     /// assert_eq!(req.content_type(), Some(&ContentType::MsgPack));
     /// # });
     /// ```
     #[cfg(feature = "msgpack")]
     #[cfg_attr(nightly, doc(cfg(feature = "msgpack")))]
-    pub fn msgpack<T: crate::serde::Serialize>(self, value: &T) -> Self {
+    pub fn msgpack<T: crate::serde::Serialize>(mut self, value: &T) -> Self {
         let msgpack = rmp_serde::to_vec(value).unwrap_or_default();
-        self.header(crate::http::ContentType::MsgPack).body(msgpack)
+        self._request_mut().replace_header(crate::http::ContentType::MsgPack);
+        self.body(msgpack)
     }
 
     /// Set the body (data) of the request without consuming `self`.

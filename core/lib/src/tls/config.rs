@@ -6,7 +6,7 @@ use figment::value::magic::{Either, RelativePathBuf};
 use serde::{Deserialize, Serialize};
 use indexmap::IndexSet;
 use rustls::crypto::{ring, CryptoProvider};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::{PemObject, SectionKind}};
 use rustls::server::{ServerSessionMemoryCache, ServerConfig, WebPkiClientVerifier};
 
 use crate::tls::resolver::DynResolver;
@@ -30,6 +30,13 @@ use crate::tls::error::{Result, Error, KeyError};
 ///     A list of supported [`CipherSuite`]s in server-preferred order, from
 ///     most to least. It is not required and defaults to
 ///     [`CipherSuite::DEFAULT_SET`], the recommended setting.
+///
+///     If the application installs a process-wide default
+///     [`CryptoProvider`], Rocket uses that provider as installed and does not
+///     apply `ciphers`. Clients negotiate from the provider's cipher suites,
+///     and `prefer_server_cipher_order` applies to the provider's order. An
+///     application that wants the configured suites to apply reads them with
+///     [`TlsConfig::ciphers()`] and builds its provider from them.
 ///
 ///   * `prefer_server_cipher_order`
 ///
@@ -83,6 +90,8 @@ use crate::tls::error::{Result, Error, KeyError};
 /// # assert_eq!(tls_config.ciphers().count(), 9);
 /// # assert!(!tls_config.prefer_server_cipher_order());
 /// ```
+///
+/// [`CryptoProvider`]: https://docs.rs/rustls/0.23/rustls/crypto/struct.CryptoProvider.html
 #[derive(Debug, PartialEq, Clone, Deserialize, Serialize)]
 pub struct TlsConfig {
     /// Path to a PEM file with, or raw bytes for, a DER-encoded X.509 TLS
@@ -107,6 +116,8 @@ pub struct TlsConfig {
 }
 
 /// A supported TLS cipher suite.
+///
+/// See [`TlsConfig`] for when the configured cipher suites apply.
 #[allow(non_camel_case_types)]
 #[derive(PartialEq, Eq, Debug, Copy, Clone, Hash, Deserialize, Serialize)]
 #[non_exhaustive]
@@ -196,7 +207,7 @@ impl TlsConfig {
     /// If a suite appears more than once in `ciphers`, only the first suite
     /// (and its relative order) is considered. If all cipher suites for a
     /// version oF TLS are disabled, the respective protocol itself is disabled
-    /// entirely.
+    /// entirely. See [`TlsConfig`] for when the configured cipher suites apply.
     ///
     /// # Example
     ///
@@ -364,8 +375,9 @@ impl TlsConfig {
         to_reader(&self.key)
     }
 
-    /// Returns an iterator over the enabled cipher suites in their order of
-    /// preference from most to least preferred.
+    /// Returns an iterator over the configured cipher suites in their order of
+    /// preference from most to least preferred. See [`TlsConfig`] for when
+    /// they apply.
     ///
     /// # Example
     ///
@@ -399,7 +411,7 @@ impl TlsConfig {
     ///
     /// # let certs_buf = &[];
     /// # let key_buf = &[];
-    /// // The default prefers the server's order.
+    /// // The default prefers the client's order.
     /// let tls_config = TlsConfig::from_bytes(certs_buf, key_buf);
     /// assert!(!tls_config.prefer_server_cipher_order());
     ///
@@ -495,23 +507,17 @@ impl TlsConfig {
 /// Loads certificates from `reader`.
 impl TlsConfig {
     pub(crate) fn load_certs(&self) -> Result<Vec<CertificateDer<'static>>> {
-        rustls_pemfile::certs(&mut self.certs_reader()?)
+        CertificateDer::pem_reader_iter(self.certs_reader()?)
             .collect::<Result<_, _>>()
             .map_err(Error::CertChain)
     }
 
     /// Load and decode the private key  from `reader`.
     pub(crate) fn load_key(&self) -> Result<PrivateKeyDer<'static>> {
-        use rustls_pemfile::Item::*;
-
-        let mut keys = rustls_pemfile::read_all(&mut self.key_reader()?)
-            .map(|result| result.map_err(KeyError::Io)
-                .and_then(|item| match item {
-                    Pkcs1Key(key) => Ok(key.into()),
-                    Pkcs8Key(key) => Ok(key.into()),
-                    Sec1Key(key) => Ok(key.into()),
-                    _ => Err(KeyError::BadItem(item))
-                })
+        let mut keys = <(SectionKind, Vec<u8>)>::pem_reader_iter(self.key_reader()?)
+            .map(|result| result.map_err(KeyError::Pem)
+                .and_then(|(kind, der)| PrivateKeyDer::from_pem(kind, der)
+                    .ok_or(KeyError::BadItem(kind)))
             )
             .collect::<Result<Vec<PrivateKeyDer<'static>>, _>>()?;
 
@@ -576,7 +582,7 @@ impl CipherSuite {
         CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
     ];
 
-    /// The default set and order of cipher suites. These are the TLS 1.3
+    /// The TLS v1.3 set and order of cipher suites. These are the TLS 1.3
     /// variants in [`CipherSuite`] in their declaration order.
     pub const TLS_V13_SET: [CipherSuite; 3] = [
         CipherSuite::TLS_CHACHA20_POLY1305_SHA256,
@@ -584,7 +590,7 @@ impl CipherSuite {
         CipherSuite::TLS_AES_128_GCM_SHA256,
     ];
 
-    /// The default set and order of cipher suites. These are the TLS 1.2
+    /// The TLS v1.2 set and order of cipher suites. These are the TLS 1.2
     /// variants in [`CipherSuite`] in their declaration order.
     pub const TLS_V12_SET: [CipherSuite; 6] = [
         CipherSuite::TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
@@ -772,6 +778,64 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn private_key_files_hold_exactly_one_key() {
+        let keys: [&[u8]; 3] = [
+            include_bytes!(tls_example_private_pem!("ca_key.pem")),
+            include_bytes!(tls_example_private_pem!("ed25519_key.pem")),
+            include_bytes!(tls_example_private_pem!("ecdsa_nistp256_sha256_key_sec1.pem")),
+        ];
+
+        let load_key = |pem: &[u8]| TlsConfig::from_bytes(&[], pem).load_key();
+        let cert = include_bytes!(tls_example_private_pem!("ca_cert.pem"));
+        for (i, first) in keys.iter().enumerate() {
+            load_key(first).unwrap();
+
+            let mut pem = cert.to_vec();
+            pem.extend_from_slice(first);
+            for other in keys.iter().cycle().skip(i + 1).take(2) {
+                pem.extend_from_slice(other);
+            }
+
+            pem.extend_from_slice(cert);
+            let error = load_key(&pem).unwrap_err();
+            assert!(matches!(error, Error::PrivKey(KeyError::BadItem(SectionKind::Certificate))));
+
+            pem.extend_from_slice(first);
+            let error = load_key(&pem).unwrap_err();
+            assert!(matches!(error, Error::PrivKey(KeyError::BadItem(SectionKind::Certificate))));
+
+            let pem = [*first, *first].concat();
+            let error = load_key(&pem).unwrap_err();
+            assert!(matches!(error, Error::PrivKey(KeyError::BadKeyCount(2))));
+        }
+
+        let error = load_key(&keys.concat()).unwrap_err();
+        assert!(matches!(error, Error::PrivKey(KeyError::BadKeyCount(3))));
+    }
+
+    #[test]
+    fn private_key_errors() {
+        let key = include_bytes!(tls_example_private_pem!("ed25519_key.pem"));
+        let load_key = |pem: &[u8]| TlsConfig::from_bytes(&[], pem).load_key();
+        let malformed = b"-----BEGIN CERTIFICATE-----\n?\n-----END CERTIFICATE-----\n";
+        let mut pem = malformed.to_vec();
+        pem.extend_from_slice(key);
+        let error = load_key(&pem).unwrap_err();
+        assert!(matches!(error, Error::PrivKey(KeyError::Pem(_))));
+
+        pem.extend_from_slice(malformed);
+        let error = load_key(&pem).unwrap_err();
+        assert!(matches!(error, Error::PrivKey(KeyError::Pem(_))));
+
+        let pem = b"-----BEGIN PRIVATE KEY-----\n?\n-----END PRIVATE KEY-----\n";
+        let error = load_key(pem).unwrap_err();
+        assert!(matches!(error, Error::PrivKey(KeyError::Pem(_))));
+
+        let error = load_key(malformed).unwrap_err();
+        assert!(matches!(error, Error::PrivKey(KeyError::Pem(_))));
     }
 
     #[test]

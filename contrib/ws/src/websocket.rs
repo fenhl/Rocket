@@ -1,4 +1,5 @@
 use std::io;
+use std::time::Duration;
 
 use rocket::data::{IoHandler, IoStream};
 use rocket::futures::{self, StreamExt, SinkExt, future::BoxFuture, stream::SplitStream};
@@ -9,6 +10,10 @@ use rocket::http::Status;
 use crate::{Config, Message};
 use crate::stream::DuplexStream;
 use crate::result::{Result, Error};
+use crate::tungstenite::error::ProtocolError::{SendAfterClosing, ResetWithoutClosingHandshake};
+
+/// How long to wait to send a `Close` and receive the peer's reply.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A request guard identifying WebSocket requests. Converts into a [`Channel`]
 /// or [`MessageStream`].
@@ -36,7 +41,20 @@ pub struct WebSocket {
 }
 
 impl WebSocket {
+    fn new(key: String) -> WebSocket {
+        // `Config::default()` eagerly allocates a 128KiB read buffer for each
+        // connection. A smaller buffer keeps idle connections inexpensive.
+        let config = Config::default().read_buffer_size(8 * 1024);
+        WebSocket { config, key }
+    }
+
     /// Change the default connection configuration to `config`.
+    ///
+    /// `config` replaces the default configuration entirely. By default, each
+    /// connection allocates an 8KiB read buffer, while [`Config::default()`]
+    /// uses a 128KiB read buffer. To keep a small buffer, set its size
+    /// explicitly with [`Config::read_buffer_size()`]. See [`Config`] for
+    /// details.
     ///
     /// # Example
     ///
@@ -46,10 +64,11 @@ impl WebSocket {
     /// #
     /// #[get("/echo")]
     /// fn echo_stream(ws: ws::WebSocket) -> ws::Stream!['static] {
-    ///     let ws = ws.config(ws::Config {
-    ///         max_send_queue: Some(5),
-    ///         ..Default::default()
-    ///     });
+    ///     let config = ws::Config::default()
+    ///         .max_message_size(Some(4 << 20))
+    ///         .read_buffer_size(8 * 1024);
+    ///
+    ///     let ws = ws.config(config);
     ///
     ///     ws::Stream! { ws =>
     ///         for await message in ws {
@@ -126,6 +145,10 @@ impl WebSocket {
     /// that are `Ok(Message)` are sent to the client while items of type
     /// `Err(Error)` result in the connection being closed and the remainder of
     /// the stream discarded.
+    ///
+    /// A stream that ends sends the client a [`Message::Close`]; a yielded
+    /// `Close` ends the stream with that message. The server then waits
+    /// briefly for the client's reply before closing the connection.
     ///
     /// # Example
     ///
@@ -227,11 +250,12 @@ impl<'r> FromRequest<'r> for WebSocket {
             .any(|h| h.split(',').any(|v| eq(v.trim(), "websocket")));
 
         let is_13 = headers.get_one("Sec-WebSocket-Version").map_or(false, |v| v == "13");
-        let key = headers.get_one("Sec-WebSocket-Key").map(|k| derive_accept_key(k.as_bytes()));
+        let key = headers.get_one("Sec-WebSocket-Key").filter(|key| {
+            key.len() == 24 && data_encoding::BASE64.decode(key.as_bytes())
+                .is_ok_and(|bytes| bytes.len() == 16)
+        }).map(|key| derive_accept_key(key.as_bytes()));
         match key {
-            Some(key) if is_upgrade && is_ws && is_13 => {
-                Outcome::Success(WebSocket { key, config: Config::default() })
-            },
+            Some(key) if is_upgrade && is_ws && is_13 => Outcome::Success(WebSocket::new(key)),
             Some(_) | None => Outcome::Forward(Status::BadRequest)
         }
     }
@@ -262,7 +286,7 @@ impl<'r, 'o: 'r, S> Responder<'r, 'o> for MessageStream<'o, S>
 #[rocket::async_trait]
 impl IoHandler for Channel<'_> {
     async fn io(self: Box<Self>, io: IoStream) -> io::Result<()> {
-        let stream = DuplexStream::new(io, self.ws.config).await;
+        let stream = DuplexStream::new(io, self.ws.config, false).await;
         let result = (self.handler)(stream).await;
         handle_result(result).map(|_| ())
     }
@@ -273,22 +297,45 @@ impl<'r, S> IoHandler for MessageStream<'r, S>
     where S: futures::Stream<Item = Result<Message>> + Send + 'r
 {
     async fn io(self: Box<Self>, io: IoStream) -> io::Result<()> {
-        let (mut sink, source) = DuplexStream::new(io, self.ws.config).await.split();
-        let stream = (self.handler)(source);
-        rocket::tokio::pin!(stream);
-        while let Some(msg) = stream.next().await {
-            let result = match msg {
-                Ok(msg) if msg.is_close() => return Ok(()),
-                Ok(msg) => sink.send(msg).await,
-                Err(e) => Err(e)
-            };
+        let (mut sink, source) = DuplexStream::new(io, self.ws.config, true).await.split();
 
-            if !handle_result(result)? {
-                return Ok(());
+        // Drop the stream as soon as it yields a `Close` or ends.
+        let close = {
+            let stream = (self.handler)(source);
+            rocket::tokio::pin!(stream);
+            loop {
+                let result = match stream.next().await {
+                    Some(Ok(msg)) if msg.is_close() => break msg,
+                    Some(Ok(msg)) => sink.send(msg).await,
+                    Some(Err(e)) => Err(e),
+                    None => break Message::Close(None),
+                };
+
+                if !handle_result(result)? {
+                    return Ok(());
+                }
             }
-        }
+        };
 
-        Ok(())
+        let closing = async {
+            match sink.send(close).await {
+                // Wait for the peer's reply.
+                Ok(()) => sink.close().await,
+                // The peer closed first. Flush the queued reply.
+                Err(Error::Protocol(SendAfterClosing)) => sink.flush().await,
+                // The closing handshake has already completed.
+                Err(Error::AlreadyClosed) => Ok(()),
+                Err(e) => Err(e),
+            }
+        };
+
+        // The stream has ended. A peer that's gone, I/O cancelled by shutdown,
+        // or a peer that doesn't reply in time ends the connection normally.
+        match rocket::tokio::time::timeout(CLOSE_TIMEOUT, closing).await {
+            Ok(Err(Error::Protocol(ResetWithoutClosingHandshake) | Error::Io(_))) => Ok(()),
+            Ok(result) => handle_result(result).map(|_| ()),
+            Err(_) => Ok(()),
+        }
     }
 }
 

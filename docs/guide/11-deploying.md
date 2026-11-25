@@ -44,13 +44,13 @@ For any deployment, it's important to keep in mind:
      # #[macro_use] extern crate rocket;
 
      use rocket::fs::FileServer;
-     use rocket_dyn_templates::Template;
+     use rocket_dyn_templates::Templating;
 
      #[launch]
      fn rocket() -> _ {
          rocket::build()
              .mount("/", FileServer::new("./static"))
-             .attach(Template::fairing())
+             .attach(Templating::new())
      }
      ```
 
@@ -92,10 +92,10 @@ The following section addresses these concerns and more for common deployment
 scenarios.
 
 [DDoS mitigation]: @github/issues/1405
-[graceful shutdown]: @api/master/rocket/shutdown/struct.ShutdownConfig.html
-[`Shutdown`]: @api/master/rocket/struct.Shutdown.html
-[shutdown fairings]: @api/master/rocket/fairing/trait.Fairing.html#shutdown
-[triggers]: @api/master/rocket/shutdown/struct.ShutdownConfig.html#triggers
+[graceful shutdown]: @api/v0.6-rc/rocket/shutdown/struct.ShutdownConfig.html
+[`Shutdown`]: @api/v0.6-rc/rocket/struct.Shutdown.html
+[shutdown fairings]: @api/v0.6-rc/rocket/fairing/trait.Fairing.html#method.on_shutdown
+[triggers]: @api/v0.6-rc/rocket/shutdown/struct.ShutdownConfig.html#triggers
 
 ## Common Scenarios
 
@@ -216,9 +216,16 @@ Our recommendation for a direct self-managed deployment is to:
     Additionally, the scheme is forwarded via `X-Forwarded-Proto`, but it must
     be explicitly configured via [`proxy_proto_header`] for Rocket to consider.
 
+    NGINX overwrites any `X-Real-IP` header sent by the client, so the value
+    can be trusted as long as the application is only reachable via NGINX.
+    Otherwise, clients can send the header themselves to spoof their IP; set
+    `ip_header = false` if the application isn't behind such a proxy. This
+    applies whenever the address is used for access control, rate limiting,
+    or audit attribution.
+
 [`cargo-zigbuild`]: https://github.com/rust-cross/cargo-zigbuild
-[`ip_header`]: @api/master/rocket/config/struct.Config.html#structfield.ip_header
-[`proxy_proto_header`]: @api/master/rocket/config/struct.Config.html#structfield.proxy_proto_header
+[`ip_header`]: @api/v0.6-rc/rocket/config/struct.Config.html#structfield.ip_header
+[`proxy_proto_header`]: @api/v0.6-rc/rocket/config/struct.Config.html#structfield.proxy_proto_header
 
 ### Containerization
 
@@ -323,7 +330,7 @@ environment, we provide only the following general guidelines:
 
   * **Enable debug logging if the application misbehaves.**
 
-    The default log level in `--release` (the release profile) is `critical`.
+    The default log level in `--release` (the release profile) is `error`.
     This level may omit messages helpful in understanding application
     misbehavior. To reenable those messages, set `ROCKET_LOG_LEVEL=debug`.
 

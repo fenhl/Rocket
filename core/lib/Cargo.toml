@@ -1,11 +1,11 @@
 [package]
 name = "rocket"
-version = "0.6.0-dev"
+version = "0.6.0-rc.1"
 authors = ["Sergio Benitez <sb@sergio.bz>"]
 description = """
 Web framework with a focus on usability, security, extensibility, and speed.
 """
-documentation = "https://api.rocket.rs/master/rocket/"
+documentation = "https://api.rocket.rs/v0.6-rc/rocket/"
 homepage = "https://rocket.rs"
 repository = "https://github.com/rwf2/Rocket"
 readme = "../../README.md"
@@ -14,7 +14,7 @@ license = "MIT OR Apache-2.0"
 build = "build.rs"
 categories = ["web-programming::http-server"]
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.95"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -24,120 +24,147 @@ workspace = true
 
 [features]
 default = ["http2", "tokio-macros", "trace"]
-http2 = ["hyper/http2", "hyper-util/http2"]
-http3-preview = ["s2n-quic", "s2n-quic-h3", "tls"]
+http2 = ["hyper/http2", "hyper-util/http2", "dep:h2"]
+http3-preview = ["quinn", "h3", "h3-quinn", "tls", "dep:quinn-proto", "dep:quinn-udp"]
 secrets = ["cookie/private", "cookie/key-expansion"]
 json = ["serde_json"]
+xml = ["quick-xml"]
 msgpack = ["rmp-serde"]
 uuid = ["uuid_", "rocket_http/uuid"]
-tls = ["rustls", "tokio-rustls", "rustls-pemfile"]
+tls = ["rustls", "tokio-rustls", "dep:rustls-webpki", "dep:ring"]
 mtls = ["tls", "x509-parser"]
 tokio-macros = ["tokio/macros"]
-trace = ["tracing-subscriber", "tinyvec", "thread_local", "rustls?/logging", "tokio-rustls?/logging", "multer/log", "s2n-quic-h3?/tracing"]
+trace = ["tracing-subscriber", "tinyvec", "thread_local", "rustls?/logging", "tokio-rustls?/logging", "multer/log", "h3?/tracing", "h3-quinn?/tracing"]
 
 [dependencies]
 # Optional serialization dependencies.
-serde_json = { version = "1.0.26", optional = true }
+serde_json = { version = "1.0.142", optional = true }
+quick-xml = { version = "0.42", optional = true, features = ["serialize"] }
 rmp-serde = { version = "1", optional = true }
-uuid_ = { package = "uuid", version = "1", optional = true, features = ["serde"] }
+uuid_ = { package = "uuid", version = "1.1.2", optional = true, features = ["serde"] }
 
 # Optional MTLS dependencies
-x509-parser = { version = "0.16", optional = true }
+x509-parser = { version = "0.18", optional = true }
 
 # Hyper dependencies
-http = "1"
-bytes = "1.4"
-hyper = { version = "1.1", default-features = false, features = ["http1", "server"] }
-hyper-util = { version = "0.1.3", default-features = false, features = ["http1", "server", "tokio"] }
+http = "1.1"
+# Require the fix for RUSTSEC-2026-0258.
+h2 = { version = "0.4.20", optional = true }
+bytes = "1.11.1"
+hyper = { version = "1.12", default-features = false, features = ["http1", "server"] }
+hyper-util = { version = "0.1.21", default-features = false, features = ["http1", "server", "tokio"] }
 
 # Non-optional, core dependencies from here on out.
 yansi = { version = "1.0.1", features = ["detect-tty"] }
 num_cpus = "1.0"
-time = { version = "0.3", features = ["macros", "parsing"] }
-memchr = "2" # TODO: Use pear instead.
+time = { version = "0.3.47", features = ["macros", "parsing"] }
+memchr = "2.6" # TODO: Use pear instead.
 binascii = "0.1"
 ref-cast = "1.0"
-ref-swap = "0.1.2"
-parking_lot = "0.12"
+parking_lot = "0.13"
 ubyte = {version = "0.10.2", features = ["serde"] }
-serde = { version = "1.0", features = ["derive"] }
+serde = { version = "1.0.220", features = ["derive"] }
 figment = { version = "0.10.17", features = ["toml", "env"] }
-rand = "0.9"
-either = "1"
-pin-project-lite = "0.2"
-indexmap = { version = "2", features = ["serde"] }
-tempfile = "3"
-async-trait = "0.1.43"
-async-stream = "0.3.2"
+either = "1.6.1"
+pin-project-lite = "0.2.17"
+indexmap = { version = "2.2.3", features = ["serde"] }
+tempfile = "3.7.0"
+async-trait = "0.1.80"
+async-stream = "0.3.3"
 multer = { version = "3.1.0", features = ["tokio-io"] }
-tokio-stream = { version = "0.1.6", features = ["signal", "time"] }
+tokio-stream = { version = "0.1.8", features = ["signal", "time"] }
 cookie = { version = "0.18", features = ["percent-encode"] }
 futures = { version = "0.3.30", default-features = false, features = ["std"] }
 state = "0.6"
 
 # tracing
-tracing = { version = "0.1.40", default-features = false, features = ["std", "attributes"] }
+tracing = { version = "0.1.41", default-features = false, features = ["std", "attributes"] }
 tinyvec = { version = "1.6", optional = true, features = ["std", "rustc_1_57"] }
-thread_local = { version = "1.1", optional = true }
+thread_local = { version = "1.1.4", optional = true }
 
 [dependencies.tracing-subscriber]
-version = "0.3.18"
+version = "0.3.20"
 optional = true
 default-features = false
 features = ["fmt", "tracing-log", "parking_lot"]
 
 [dependencies.rocket_codegen]
-version = "0.6.0-dev"
+version = "=0.6.0-rc.1"
 path = "../codegen"
 
 [dependencies.rocket_http]
-version = "0.6.0-dev"
+version = "=0.6.0-rc.1"
 path = "../http"
 features = ["serde"]
 
 [dependencies.tokio]
-version = "1.35.1"
+version = "1.54.1"
 features = ["rt-multi-thread", "net", "io-util", "fs", "time", "sync", "signal", "parking_lot"]
 
 [dependencies.tokio-util]
-version = "0.7"
+version = "0.7.10"
 default-features = false
 features = ["io"]
 
 [dependencies.rustls]
-version = "0.23"
+version = "0.23.46"
 default-features = false
 features = ["ring", "std", "tls12"]
 optional = true
 
 [dependencies.tokio-rustls]
-version = "0.26"
+version = "0.26.6"
 default-features = false
 features = ["tls12", "ring"]
 optional = true
 
-[dependencies.rustls-pemfile]
-version = "2.1.0"
-optional = true
-
-[dependencies.s2n-quic]
-version = "1.51"
+[dependencies.rustls-webpki]
+version = "0.103.16"
 default-features = false
-features = ["provider-address-token-default", "provider-tls-rustls"]
 optional = true
 
-[dependencies.s2n-quic-h3]
-git = "https://github.com/SergioBenitez/s2n-quic-h3.git"
-rev = "f832471"
+# Require the fix for RUSTSEC-2025-0009.
+[dependencies.ring]
+version = "0.17.12"
+default-features = false
+optional = true
+
+[dependencies.quinn]
+version = "0.11.12"
+default-features = false
+features = ["runtime-tokio", "rustls-ring"]
+optional = true
+
+# Require the fixes for RUSTSEC-2026-0523 and RUSTSEC-2026-0524.
+[dependencies.quinn-proto]
+version = "0.11.19"
+default-features = false
+optional = true
+
+# Require the fix for RUSTSEC-2026-0538.
+[dependencies.quinn-udp]
+version = "0.5.16"
+default-features = false
+optional = true
+
+[dependencies.h3]
+version = "0.0.8"
+optional = true
+
+[dependencies.h3-quinn]
+version = "0.0.10"
 optional = true
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2.149"
+libc = "0.2.191"
 
 [build-dependencies]
-version_check = "0.9.1"
+version_check = "0.9.4"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "io-std"] }
+tokio = { version = "1.54.1", features = ["macros", "io-std"] }
+hyper = { version = "1.12", default-features = false, features = ["client", "http1", "http2"] }
+http-body-util = "0.1.5"
 figment = { version = "0.10.17", features = ["test"] }
-pretty_assertions = "1"
+pretty_assertions = "1.3.0"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }

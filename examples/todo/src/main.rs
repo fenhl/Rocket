@@ -14,7 +14,7 @@ use rocket::serde::Serialize;
 use rocket::form::Form;
 use rocket::fs::{FileServer, relative};
 
-use rocket_dyn_templates::Template;
+use rocket_dyn_templates::{Template, Templating};
 
 use crate::task::{Task, Todo};
 
@@ -69,7 +69,7 @@ async fn toggle(id: i32, conn: DbConn) -> Result<Redirect, Template> {
         Ok(_) => Ok(Redirect::to("/")),
         Err(e) => {
             error!("DB toggle({id}) error: {e}");
-            Err(Template::render("index", Context::err(&conn, "Failed to toggle task.").await))
+            Err(Template::render("index.html", Context::err(&conn, "Failed to toggle task.").await))
         }
     }
 }
@@ -80,7 +80,7 @@ async fn delete(id: i32, conn: DbConn) -> Result<Flash<Redirect>, Template> {
         Ok(_) => Ok(Flash::success(Redirect::to("/"), "Todo was deleted.")),
         Err(e) => {
             error!("DB deletion({id}) error: {e}");
-            Err(Template::render("index", Context::err(&conn, "Failed to delete task.").await))
+            Err(Template::render("index.html", Context::err(&conn, "Failed to delete task.").await))
         }
     }
 }
@@ -88,7 +88,7 @@ async fn delete(id: i32, conn: DbConn) -> Result<Flash<Redirect>, Template> {
 #[get("/")]
 async fn index(flash: Option<FlashMessage<'_>>, conn: DbConn) -> Template {
     let flash = flash.map(FlashMessage::into_inner);
-    Template::render("index", Context::raw(&conn, flash).await)
+    Template::render("index.html", Context::raw(&conn, flash).await)
 }
 
 async fn run_migrations(rocket: Rocket<Build>) -> Rocket<Build> {
@@ -108,7 +108,7 @@ async fn run_migrations(rocket: Rocket<Build>) -> Rocket<Build> {
 fn rocket() -> _ {
     rocket::build()
         .attach(DbConn::fairing())
-        .attach(Template::fairing())
+        .attach(Templating::new())
         .attach(AdHoc::on_ignite("Run Migrations", run_migrations))
         .mount("/", FileServer::new(relative!("static")))
         .mount("/", routes![index])

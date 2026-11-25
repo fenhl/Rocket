@@ -79,7 +79,8 @@ impl Rocket<Orbit> {
     /// Dispatches the request to the router and processes the outcome to
     /// produce a response. If the initial outcome is a *forward* and the
     /// request was a HEAD request, the request is rewritten and rerouted as a
-    /// GET. This is automatic HEAD handling.
+    /// GET. This is automatic HEAD handling. A request that failed to parse
+    /// isn't routed; its outcome is a `400` error.
     ///
     /// After performing the above, if the outcome is a forward or error, the
     /// appropriate error catcher is invoked to produce the response. Otherwise,
@@ -99,7 +100,12 @@ impl Rocket<Orbit> {
         let was_head_request = request.method() == Method::Head;
 
         // Route the request and run the user's handlers.
-        let mut response = match self.route(request, data).await {
+        let outcome = match request.errors.is_empty() {
+            true => self.route(request, data).await,
+            false => Outcome::Error(Status::BadRequest),
+        };
+
+        let mut response = match outcome {
             Outcome::Success(response) => response,
             Outcome::Forward((data, _)) if request.method() == Method::Head => {
                 tracing::Span::current().record("autohandled", true);
@@ -139,16 +145,20 @@ impl Rocket<Orbit> {
             response.strip_body();
         }
 
-        // If the response status is 204, strip the body and its size (no
-        // content-length header). Otherwise, check if the body is sized and use
-        // that size to set the content-length headr appropriately.
+        // A 204 response has no body and neither framing header. Otherwise,
+        // content-length must not be sent with transfer-encoding; without the
+        // latter, use the body's size, if known, to set content-length.
         if response.status() == Status::NoContent {
+            response.remove_header("Content-Length");
+            response.remove_header("Transfer-Encoding");
             *response.body_mut() = crate::response::Body::unsized_none();
+        } else if response.headers().contains("Transfer-Encoding") {
+            response.remove_header("Content-Length");
         } else if let Some(size) = response.body_mut().size().await {
             response.set_raw_header("Content-Length", size.to_string());
         }
 
-        if let Some(alt_svc) = request.rocket().alt_svc() {
+        if let Some(alt_svc) = request.rocket().alt_svc.as_deref() {
             response.set_raw_header("Alt-Svc", alt_svc);
         }
 
@@ -202,10 +212,10 @@ impl Rocket<Orbit> {
         // Go through all matching routes until we fail or succeed or run out of
         // routes to try, in which case we forward with the last status.
         let mut status = Status::NotFound;
-        for route in self.router.route(request) {
+        for (id, route) in self.router.route(request) {
             // Retrieve and set the requests parameters.
             route.trace_info();
-            request.set_route(route);
+            request.set_route(id);
 
             let name = route.name.as_deref();
             let outcome = catch_handle(name, || route.handler.handle(request, data)).await
